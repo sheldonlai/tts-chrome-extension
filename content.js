@@ -39,7 +39,7 @@ function splitTextIntoChunks(text, maxChunkLength = 1500, preferredSplitChars = 
                 // If no space found, or space is at the beginning, force split at maxChunkLength
                 splitAt = maxChunkLength;
             }
-            
+
             chunks.push(remainingText.substring(0, splitAt).trim());
             remainingText = remainingText.substring(splitAt).trim();
         }
@@ -64,10 +64,10 @@ function extractAndChunkTextContent() {
         console.error("[Content Script] Error during Readability.parse():", e);
         return null;
     }
-    
+
     if (article && article.textContent) {
         console.log("[Content Script] Readability parsed article successfully. Title:", article.title, "Original Text Length:", article.textContent.length);
-        
+
         const preliminaryChunks = article.textContent.split(/\n\s*\n/); // Split by paragraph first
         const finalChunks = [];
 
@@ -83,23 +83,23 @@ function extractAndChunkTextContent() {
                 }
             }
         });
-        
+
         if (finalChunks.length === 0 && article.textContent.trim().length > 0) {
             console.warn("[Content Script] Readability extracted text, but it resulted in zero valid chunks. Using entire textContent as fallback.");
             finalChunks.push(article.textContent.trim());
         } else if (finalChunks.length === 0) {
-             console.warn("[Content Script] article.textContent was empty after trimming or no chunks generated.");
-             return null;
+            console.warn("[Content Script] article.textContent was empty after trimming or no chunks generated.");
+            return null;
         }
-        
+
         console.log(`[Content Script] Text split into ${finalChunks.length} final chunks.`);
-        
+
         return {
             title: article.title || "Untitled Page",
             textContentChunks: finalChunks,
             simplifiedHtml: article.content,
             excerpt: article.excerpt,
-            length: article.length 
+            length: article.length
         };
     } else {
         console.warn("[Content Script] Readability could not parse an article or textContent was empty.");
@@ -113,11 +113,11 @@ function extractAndChunkTextContent() {
 try {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.log("[Content Script] Message listener invoked. Request received:", request);
-        
-        if (request.action === "extractReadablePageContent") { 
+
+        if (request.action === "extractReadablePageContent") {
             console.log("[Content Script] 'extractReadablePageContent' action received from background.");
             const articleDataWithChunks = extractAndChunkTextContent();
-            
+
             if (articleDataWithChunks && articleDataWithChunks.textContentChunks && articleDataWithChunks.textContentChunks.length > 0) {
                 console.log("[Content Script] Successfully extracted and chunked content. Sending response to background. Chunks:", articleDataWithChunks.textContentChunks.length);
                 sendResponse({ success: true, data: articleDataWithChunks });
@@ -125,7 +125,7 @@ try {
                 console.error("[Content Script] Failed to extract or chunk content. Sending error response to background.");
                 sendResponse({ success: false, error: "Could not extract or chunk readable content from the page using Readability.js." });
             }
-            return true; 
+            return true;
         }
     });
     console.log("[Content Script] Message listener successfully attached.");
