@@ -9,30 +9,30 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
             width: 380px;
-            padding: 15px;
+            padding: 10px;
             text-align: center;
             background-color: #f4f6f8;
             color: #333;
             box-sizing: border-box;
             margin: 0;
+            font-size: 14px;
         }
 
         h3 {
             margin-top: 0;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
             color: #2c3e50;
+            font-size: 1.2em;
         }
 
-        /* Current Session Info Styling */
         #currentSessionInfo {
             background-color: #e9ecef;
             padding: 8px;
             border-radius: 4px;
-            margin-bottom: 10px;
-            font-size: 0.85em;
+            margin-bottom: 8px;
+            font-size: 0.9em;
             color: #495057;
-            min-height: 30px;
-            /* Ensure space even when empty */
+            min-height: 25px;
             text-align: left;
         }
 
@@ -42,6 +42,7 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            margin-bottom: 3px;
         }
 
         #currentSessionChunkInfo {
@@ -52,13 +53,12 @@
             background-color: #28a745;
             color: white;
             border: none;
-            padding: 8px 12px;
+            padding: 6px 10px;
             margin-top: 5px;
             border-radius: 5px;
             cursor: pointer;
-            font-size: 0.9em;
+            font-size: 0.85em;
             display: none;
-            /* Hidden by default */
         }
 
         #resumeButton:hover {
@@ -66,18 +66,17 @@
         }
 
         #statusMessage {
-            margin-top: 10px;
+            margin-top: 8px;
             font-style: italic;
-            min-height: 20px;
+            min-height: 18px;
             color: #555;
             word-wrap: break-word;
-            font-size: 0.9em;
+            font-size: 0.85em;
         }
 
         audio#popupAudioPlayer {
             width: 100%;
-            margin-top: 10px;
-            /* Reduced margin */
+            margin-top: 8px;
             border-radius: 5px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
@@ -86,11 +85,10 @@
             border: 4px solid #f3f3f3;
             border-top: 4px solid #3498db;
             border-radius: 50%;
-            width: 30px;
-            height: 30px;
+            width: 25px;
+            height: 25px;
             animation: spin 1s linear infinite;
-            margin: 15px auto;
-            /* Reduced margin */
+            margin: 10px auto;
             display: none;
         }
 
@@ -104,54 +102,91 @@
             }
         }
 
-        #historyContainer {
-            margin-top: 15px;
-            /* Reduced margin */
+        .list-container {
+            margin-top: 12px;
             text-align: left;
         }
 
-        #historyContainer h4 {
-            margin-bottom: 5px;
+        .list-container h4 {
+            margin-top: 0;
+            margin-bottom: 0;
             color: #2c3e50;
             font-size: 1em;
             text-align: center;
+            padding: 8px 5px;
+            background-color: #dde2e7;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            position: relative;
+            user-select: none;
         }
 
-        ul#historyList {
+        .list-container h4.collapsed-header {
+            border-radius: 4px;
+        }
+
+        .list-container h4.expanded-header {
+            border-bottom-left-radius: 0;
+            border-bottom-right-radius: 0;
+            border-bottom: 1px dashed #ccc;
+        }
+
+        .list-container ul {
             list-style-type: none;
             padding: 0;
-            max-height: 120px;
-            /* Adjusted height */
+            max-height: 100px;
             overflow-y: auto;
             border: 1px solid #ddd;
-            border-radius: 5px;
+            border-top: none;
+            border-radius: 0 0 5px 5px;
             background-color: #fff;
-            margin-bottom: 10px;
+            margin-top: 0;
+            margin-bottom: 8px;
+            transition: max-height 0.3s ease-in-out, border-width 0.3s ease-in-out, opacity 0.3s ease-in-out;
+            opacity: 1;
         }
 
-        #historyList li {
-            padding: 8px 10px;
+        .list-container ul.collapsed {
+            max-height: 0;
+            border-bottom-width: 0;
+            border-left-width: 0;
+            border-right-width: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            opacity: 0;
+            overflow: hidden;
+        }
+
+        .list-container li {
+            padding: 7px 10px;
             border-bottom: 1px solid #eee;
             cursor: pointer;
-            font-size: 0.9em;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            font-size: 0.85em;
+            /* Removed white-space, overflow, text-overflow from li directly */
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
-        #historyList li:last-child {
+        .list-container li:last-child {
             border-bottom: none;
         }
 
-        #historyList li:hover {
+        .list-container li:hover {
             background-color: #e9ecef;
         }
 
-        .history-text {
+        .list-container li.current-chunk {
+            background-color: #d1ecf1 !important;
+            font-weight: bold;
+            color: #0c5460;
+        }
+
+        /* Apply truncation to the text span within list items */
+        .list-text {
             flex-grow: 1;
+            white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
             margin-right: 10px;
@@ -165,6 +200,8 @@
             font-size: 1.1em;
             padding: 2px 5px;
             line-height: 1;
+            flex-shrink: 0;
+            /* Prevent delete button from shrinking */
         }
 
         .delete-history-item:hover {
@@ -175,11 +212,11 @@
             background-color: #7f8c8d;
             color: white;
             border: none;
-            padding: 8px 12px;
-            margin-top: 5px;
+            padding: 6px 10px;
+            margin-top: 0px;
             border-radius: 5px;
             cursor: pointer;
-            font-size: 0.9em;
+            font-size: 0.85em;
             display: block;
             width: fit-content;
             margin-left: auto;
@@ -205,13 +242,18 @@
     <audio id="popupAudioPlayer" controls></audio>
     <div id="statusMessage">Waiting for text...</div>
 
-    <div id="historyContainer">
-        <h4>History</h4>
-        <ul id="historyList">
-        </ul>
-        <button id="clearHistoryBtn" title="Clear all TTS history">Clear History</button>
+    <div id="sessionQueueContainer" class="list-container" style="display: none;">
+        <h4 id="toggleSessionQueue" class="expanded-header">Current Session Chunks ▼</h4>
+        <ul id="sessionQueueList"></ul>
     </div>
 
+    <div id="historyContainer" class="list-container">
+        <h4 id="toggleHistoryList" class="collapsed-header">History ▶</h4>
+        <ul id="historyList" class="collapsed"> </ul>
+        <button id="clearHistoryBtn" title="Clear all TTS history" style="display: none;">Clear History</button>
+    </div>
+
+    <script src="cacheUtils.js"></script>
     <script src="uiHelpers.js"></script>
     <script src="audioController.js"></script>
     <script src="historyManager.js"></script>

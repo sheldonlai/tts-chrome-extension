@@ -1,7 +1,17 @@
 // background.js
 
+// Import shared utilities
+try {
+    importScripts('popup/cacheUtils.js'); // Assuming cacheUtils.js is in popup/
+} catch (e) {
+    console.error("Failed to import cacheUtils.js in background.js. Ensure path is correct.", e);
+}
+
+
 let ttsPopoutWindowId = null;
 const PERSISTED_SESSION_KEY = 'persistedTTSSession';
+// AUDIO_CACHE_PREFIX_BG is now AUDIO_CACHE_PREFIX from cacheUtils.js
+// generateAudioCacheKeyForBg is now generateAudioCacheKey from cacheUtils.js
 
 // In-memory session state
 let currentTTSSession = {
@@ -10,17 +20,21 @@ let currentTTSSession = {
     currentIndex: 0,
     isActive: false,
     isPlayingInPopup: false,
-    prefetchedAudioDataUrlForNext: null, // For the *next* chunk (currentIndex + 1)
-    isCurrentlyPrefetching: false      // To prevent multiple prefetch attempts
+    prefetchedAudioDataUrlForNext: null,
+    isCurrentlyPrefetching: false
 };
 
 // --- Session Persistence Functions ---
 async function saveCurrentSession() {
-    if (currentTTSSession.isActive || currentTTSSession.chunks.length > 0) {
-        console.log("[Service Worker] Saving current TTS session to storage. Index:", currentTTSSession.currentIndex);
+    if (currentTTSSession.isActive || (currentTTSSession.chunks && currentTTSSession.chunks.length > 0)) {
+        console.log("[Service Worker] Saving current TTS session to storage. Index:", currentTTSSession.currentIndex, "Active:", currentTTSSession.isActive, "PlayingInPopup:", currentTTSSession.isPlayingInPopup);
         try {
-            // Don't save prefetchedAudioDataUrlForNext as it's transient for the current browser session
-            const sessionToSave = { ...currentTTSSession, prefetchedAudioDataUrlForNext: null, isCurrentlyPrefetching: false };
+            const sessionToSave = {
+                chunks: currentTTSSession.chunks,
+                articleDetails: currentTTSSession.articleDetails,
+                currentIndex: currentTTSSession.currentIndex,
+                isActive: currentTTSSession.isActive,
+            };
             await chrome.storage.local.set({ [PERSISTED_SESSION_KEY]: sessionToSave });
         } catch (e) {
             console.error("[Service Worker] Error saving session to storage:", e);
@@ -33,14 +47,24 @@ async function saveCurrentSession() {
 async function loadPersistedSession() {
     try {
         const result = await chrome.storage.local.get([PERSISTED_SESSION_KEY]);
-        if (result[PERSISTED_SESSION_KEY] && result[PERSISTED_SESSION_KEY].chunks && result[PERSISTED_SESSION_KEY].chunks.length > 0) {
-            currentTTSSession = result[PERSISTED_SESSION_KEY];
+        const persistedData = result[PERSISTED_SESSION_KEY];
+
+        if (persistedData && persistedData.chunks && persistedData.chunks.length > 0 && typeof persistedData.currentIndex === 'number') {
+            currentTTSSession.chunks = persistedData.chunks;
+            currentTTSSession.articleDetails = persistedData.articleDetails || {};
+            if (!currentTTSSession.articleDetails.chunks || currentTTSSession.articleDetails.chunks.length === 0) {
+                currentTTSSession.articleDetails.chunks = persistedData.chunks;
+            }
+            currentTTSSession.currentIndex = persistedData.currentIndex;
+            currentTTSSession.isActive = persistedData.isActive;
+
             currentTTSSession.isPlayingInPopup = false;
             currentTTSSession.isCurrentlyPrefetching = false;
-            currentTTSSession.prefetchedAudioDataUrlForNext = null; // Always reset on load
-            console.log("[Service Worker] Loaded persisted TTS session from storage. Index:", currentTTSSession.currentIndex, "Chunks:", currentTTSSession.chunks.length);
+            currentTTSSession.prefetchedAudioDataUrlForNext = null;
+
+            console.log("[Service Worker] Loaded persisted TTS session from storage. Index:", currentTTSSession.currentIndex, "Chunks:", currentTTSSession.chunks.length, "Active:", currentTTSSession.isActive);
         } else {
-            console.log("[Service Worker] No active session found in storage to load.");
+            console.log("[Service Worker] No valid/active session found in storage to load.");
             resetTTSSession(false);
         }
     } catch (e) {
@@ -150,19 +174,20 @@ function resetTTSSession(clearStorage = true) {
     currentTTSSession.currentIndex = 0;
     currentTTSSession.isActive = false;
     currentTTSSession.isPlayingInPopup = false;
-    currentTTSSession.prefetchedAudioDataUrlForNext = null; // Reset prefetch
-    currentTTSSession.isCurrentlyPrefetching = false;    // Reset prefetch flag
+    currentTTSSession.prefetchedAudioDataUrlForNext = null;
+    currentTTSSession.isCurrentlyPrefetching = false;
     if (clearStorage) {
         clearPersistedSession();
     }
 }
 
 async function processAndSendChunkToPopup(chunkIndex) {
-    if (!currentTTSSession.isActive || chunkIndex >= currentTTSSession.chunks.length) {
-        console.log("[Service Worker] Session not active or chunk index out of bounds.", chunkIndex, currentTTSSession.chunks.length);
-        if (chunkIndex >= currentTTSSession.chunks.length && currentTTSSession.isActive) {
+    if (!currentTTSSession.isActive || !currentTTSSession.chunks || chunkIndex >= currentTTSSession.chunks.length) {
+        console.log("[Service Worker] Session not active or chunk index out of bounds for processing.",
+            "Index:", chunkIndex, "Chunks length:", currentTTSSession.chunks ? currentTTSSession.chunks.length : 'N/A');
+        if (chunkIndex >= (currentTTSSession.chunks ? currentTTSSession.chunks.length : 0) && currentTTSSession.isActive) {
             console.log("[Service Worker] All chunks processed for current session.");
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "allChunksFinished" });
+            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "allChunksFinished" }).catch(e => console.warn("Error sending allChunksFinished:", e.message));
         }
         resetTTSSession();
         return;
@@ -172,6 +197,9 @@ async function processAndSendChunkToPopup(chunkIndex) {
     const isLastChunk = chunkIndex === currentTTSSession.chunks.length - 1;
     currentTTSSession.currentIndex = chunkIndex;
     currentTTSSession.isPlayingInPopup = true;
+
+    if (!currentTTSSession.articleDetails) currentTTSSession.articleDetails = {};
+    currentTTSSession.articleDetails.chunks = currentTTSSession.chunks;
     saveCurrentSession();
 
     console.log(`[Service Worker] Processing chunk ${chunkIndex + 1}/${currentTTSSession.chunks.length} for popup: "${chunkText.substring(0, 50)}..."`);
@@ -179,13 +207,14 @@ async function processAndSendChunkToPopup(chunkIndex) {
     const articleDetailsForChunk = {
         title: currentTTSSession.articleDetails.title || "Reading Page Content",
         textContent: chunkText,
-        isChunk: true,
+        isChunk: currentTTSSession.chunks.length > 1,
         currentChunkIndex: chunkIndex,
         totalChunks: currentTTSSession.chunks.length,
         isLastChunk: isLastChunk,
         simplifiedHtml: currentTTSSession.articleDetails.simplifiedHtml,
         excerpt: currentTTSSession.articleDetails.excerpt,
-        length: currentTTSSession.articleDetails.length
+        length: currentTTSSession.articleDetails.length,
+        chunks: currentTTSSession.chunks
     };
 
     chrome.runtime.sendMessage({
@@ -203,20 +232,28 @@ async function processAndSendChunkToPopup(chunkIndex) {
     });
 }
 
-// Re-added prefetch logic
 async function attemptToPrefetchNextChunk() {
     if (!currentTTSSession.isActive || currentTTSSession.isCurrentlyPrefetching) {
         return;
     }
-    // Prefetch for the chunk *after* the one currently being processed/played (currentTTSSession.currentIndex)
     const nextChunkToPrefetchIndex = currentTTSSession.currentIndex + 1;
 
     if (nextChunkToPrefetchIndex < currentTTSSession.chunks.length) {
+        const textToPrefetch = currentTTSSession.chunks[nextChunkToPrefetchIndex];
+        // Use the shared generateAudioCacheKey function
+        const cacheKey = generateAudioCacheKey(textToPrefetch);
+
+        const cachedItem = await chrome.storage.local.get([cacheKey]);
+        if (cachedItem[cacheKey]) {
+            console.log(`[Service Worker] Audio for next chunk (index ${nextChunkToPrefetchIndex}) already in cache. Skipping prefetch.`);
+            currentTTSSession.prefetchedAudioDataUrlForNext = cachedItem[cacheKey];
+            return;
+        }
+
         console.log(`[Service Worker] Attempting to prefetch audio for chunk index ${nextChunkToPrefetchIndex} (display number ${nextChunkToPrefetchIndex + 1})`);
         currentTTSSession.isCurrentlyPrefetching = true;
         currentTTSSession.prefetchedAudioDataUrlForNext = null;
 
-        const textToPrefetch = currentTTSSession.chunks[nextChunkToPrefetchIndex];
         try {
             const ttsUrl = 'http://localhost:8080/synthesize';
             const fetchResponse = await fetch(ttsUrl, {
@@ -239,26 +276,28 @@ async function attemptToPrefetchNextChunk() {
             console.error(`[Service Worker] Error during prefetch for chunk index ${nextChunkToPrefetchIndex}:`, error);
         } finally {
             currentTTSSession.isCurrentlyPrefetching = false;
-            // Do not save session here, prefetchedAudioDataUrlForNext is transient
         }
     } else {
-        console.log("[Service Worker] No more chunks to prefetch (already at or past the last chunk).");
         currentTTSSession.prefetchedAudioDataUrlForNext = null;
     }
 }
 
-
+// --- Event and Message Listeners ---
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "processTextForTTS_ContextMenu" && info.selectionText) {
         console.log("[Service Worker] Context menu: 'Read selected text'.");
-        resetTTSSession();
-        currentTTSSession.chunks = [info.selectionText];
+        await clearPersistedSession();
+        resetTTSSession(false);
+
+        const selectedText = info.selectionText;
+        currentTTSSession.chunks = [selectedText];
         currentTTSSession.articleDetails = {
             title: "Selected Text",
-            textContent: info.selectionText,
-            simplifiedHtml: `<p>${info.selectionText.replace(/\n/g, '</p><p>')}</p>`,
-            excerpt: info.selectionText.substring(0, 150) + (info.selectionText.length > 150 ? "..." : ""),
-            length: info.selectionText.length
+            textContent: selectedText,
+            simplifiedHtml: `<p>${selectedText.replace(/\n/g, '</p><p>')}</p>`,
+            excerpt: selectedText.substring(0, 150) + (selectedText.length > 150 ? "..." : ""),
+            length: selectedText.length,
+            chunks: [selectedText]
         };
         currentTTSSession.currentIndex = 0;
         currentTTSSession.isActive = true;
@@ -267,8 +306,6 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             if (ttsPopoutWindowId) {
                 await new Promise(resolve => setTimeout(resolve, 700));
                 processAndSendChunkToPopup(currentTTSSession.currentIndex);
-                // For a single chunk from context menu, prefetching isn't strictly necessary
-                // but attemptToPrefetchNextChunk will correctly do nothing if there's no next chunk.
                 attemptToPrefetchNextChunk();
             } else { resetTTSSession(); }
         } catch (error) { console.error("[SW] Error opening popout from context menu:", error); resetTTSSession(); }
@@ -290,7 +327,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "getSimplifiedContentForTTS") {
         (async () => {
-            resetTTSSession();
+            await clearPersistedSession();
+            resetTTSSession(false);
             try {
                 const lastFocusedNormalWindow = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
                 if (!lastFocusedNormalWindow) {
@@ -305,13 +343,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     if (responseFromContent && responseFromContent.success && responseFromContent.data && responseFromContent.data.textContentChunks) {
                         currentTTSSession.chunks = responseFromContent.data.textContentChunks;
                         currentTTSSession.articleDetails = responseFromContent.data;
+                        if (!currentTTSSession.articleDetails.chunks) {
+                            currentTTSSession.articleDetails.chunks = currentTTSSession.chunks;
+                        }
                         currentTTSSession.currentIndex = 0;
                         currentTTSSession.isActive = true;
                         await openOrFocusTTSPopout();
                         if (ttsPopoutWindowId) {
                             await new Promise(resolve => setTimeout(resolve, 700));
                             processAndSendChunkToPopup(currentTTSSession.currentIndex);
-                            // After sending the first chunk for processing, attempt to prefetch the next one
                             attemptToPrefetchNextChunk();
                             sendResponse({ success: true, message: "Chunked content processing initiated." });
                         } else { resetTTSSession(); sendResponse({ success: false, error: "Could not open TTS popout." }); }
@@ -324,7 +364,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "fetchTTSFromServer" && request.textToSynthesize) {
         const textToSynth = request.textToSynthesize;
-        const requestedChunkIndex = currentTTSSession.chunks.indexOf(textToSynth);
+        const requestedChunkIndex = currentTTSSession.chunks ? currentTTSSession.chunks.indexOf(textToSynth) : -1;
         console.log(`[Service Worker] 'fetchTTSFromServer' for text (chunk index ${requestedChunkIndex}): "${textToSynth.substring(0, 50)}..."`);
 
         (async () => {
@@ -338,13 +378,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 if (!fetchResponse.ok) {
                     const errorText = await fetchResponse.text();
                     const errorMessage = `TTS server error: ${fetchResponse.status} - ${errorText || fetchResponse.statusText}`;
-                    chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: errorMessage });
+                    chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: errorMessage }).catch(e => console.warn("Error sending ttsErrorPopup", e.message));
                     sendResponse({ success: false, error: errorMessage }); return;
                 }
                 const audioBlob = await fetchResponse.blob();
                 if (!(audioBlob && audioBlob.size > 0)) {
                     const blobError = "Fetched audioBlob is not valid or is empty.";
-                    chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: blobError });
+                    chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: blobError }).catch(e => console.warn("Error sending ttsErrorPopup", e.message));
                     sendResponse({ success: false, error: blobError }); return;
                 }
                 const audioDataUrl = await blobToDataURL(audioBlob);
@@ -353,10 +393,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const isLastChunkForThisAudio = currentTTSSession.isActive ? (requestedChunkIndex === currentTTSSession.chunks.length - 1) : true;
                 const articleDetailsForThisChunk = {
                     title: currentTTSSession.articleDetails.title || "Reading Page Content",
-                    isChunk: true,
+                    textContent: textToSynth,
+                    isChunk: currentTTSSession.chunks.length > 1,
                     currentChunkIndex: requestedChunkIndex,
                     totalChunks: currentTTSSession.chunks.length,
-                    isLastChunk: isLastChunkForThisAudio
+                    isLastChunk: isLastChunkForThisAudio,
+                    chunks: currentTTSSession.chunks
                 };
 
                 chrome.runtime.sendMessage({
@@ -364,18 +406,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     audioDataUrl: audioDataUrl,
                     originalText: textToSynth,
                     articleDetails: articleDetailsForThisChunk
-                });
+                }).catch(e => console.warn("Error sending playAudioDataUrl to popup", e.message));
                 sendResponse({ success: true, message: "DataURL sent for playback." });
 
-                // After successfully sending current chunk's audio, attempt to prefetch next
-                // Ensure this is the chunk the session is currently focused on before prefetching
                 if (currentTTSSession.isActive && requestedChunkIndex !== -1 && requestedChunkIndex === currentTTSSession.currentIndex) {
                     attemptToPrefetchNextChunk();
                 }
 
             } catch (error) {
                 console.error("[SW] Error during 'fetchTTSFromServer':", error);
-                chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: `Server fetch error: ${error.message}` });
+                chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: `Server fetch error: ${error.message}` }).catch(e => console.warn("Error sending ttsErrorPopup", e.message));
                 sendResponse({ success: false, error: error.message });
             }
         })();
@@ -388,32 +428,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const nextIndexToPlay = currentTTSSession.currentIndex + 1;
 
             if (nextIndexToPlay < currentTTSSession.chunks.length) {
-                currentTTSSession.currentIndex = nextIndexToPlay; // Update the main index
+                currentTTSSession.currentIndex = nextIndexToPlay;
                 currentTTSSession.isPlayingInPopup = true;
-                // saveCurrentSession(); // processAndSendChunkToPopup or the prefetched path will save
 
                 if (currentTTSSession.prefetchedAudioDataUrlForNext &&
-                    currentTTSSession.chunks[currentTTSSession.currentIndex] /* Ensure chunk exists */) {
+                    currentTTSSession.chunks[currentTTSSession.currentIndex]) {
 
                     console.log(`[Service Worker] Using prefetched audio for chunk index ${currentTTSSession.currentIndex} (display ${currentTTSSession.currentIndex + 1})`);
                     const textOfPrefetchedChunk = currentTTSSession.chunks[currentTTSSession.currentIndex];
                     const isLastChunkForPrefetched = currentTTSSession.currentIndex === currentTTSSession.chunks.length - 1;
                     const articleDetailsForPrefetchedChunk = {
                         title: currentTTSSession.articleDetails.title || "Reading Page Content",
+                        textContent: textOfPrefetchedChunk,
                         isChunk: true,
                         currentChunkIndex: currentTTSSession.currentIndex,
                         totalChunks: currentTTSSession.chunks.length,
-                        isLastChunk: isLastChunkForPrefetched
+                        isLastChunk: isLastChunkForPrefetched,
+                        chunks: currentTTSSession.chunks
                     };
                     chrome.runtime.sendMessage({
                         action: "playAudioDataUrl",
                         audioDataUrl: currentTTSSession.prefetchedAudioDataUrlForNext,
                         originalText: textOfPrefetchedChunk,
                         articleDetails: articleDetailsForPrefetchedChunk
-                    });
+                    }).catch(e => console.warn("Error sending prefetched playAudioDataUrl to popup", e.message));
                     currentTTSSession.prefetchedAudioDataUrlForNext = null;
                     sendResponse({ status: "sentPrefetchedAudio", nextIndex: currentTTSSession.currentIndex });
-                    attemptToPrefetchNextChunk(); // Prefetch the *new* next one
+                    attemptToPrefetchNextChunk();
                 } else {
                     console.log(`[Service Worker] No prefetched audio for chunk index ${currentTTSSession.currentIndex}. Telling popup to request it.`);
                     processAndSendChunkToPopup(currentTTSSession.currentIndex);
@@ -421,7 +462,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
             } else {
                 console.log("[Service Worker] All chunks finished after requestNextAudioChunk.");
-                if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "allChunksFinished" });
+                if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "allChunksFinished" }).catch(e => console.warn("Error sending allChunksFinished to popup", e.message));
                 resetTTSSession();
                 sendResponse({ status: "allChunksFinished" });
             }
@@ -432,28 +473,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    if (request.action === "requestInitialSessionState") { /* ... remains the same ... */
+    if (request.action === "requestInitialSessionState") {
         console.log("[Service Worker] Popup requested initial session state.");
+        const articleDetailsForPopup = currentTTSSession.isActive
+            ? {
+                ...currentTTSSession.articleDetails,
+                chunks: currentTTSSession.chunks,
+                isChunk: currentTTSSession.chunks && currentTTSSession.chunks.length > 1,
+                currentChunkIndex: currentTTSSession.currentIndex,
+                totalChunks: currentTTSSession.chunks ? currentTTSSession.chunks.length : 0
+            }
+            : null;
         const sessionDataForPopup = {
             isActive: currentTTSSession.isActive,
             currentIndex: currentTTSSession.currentIndex,
-            totalChunks: currentTTSSession.chunks.length,
-            articleDetails: currentTTSSession.isActive ? {
-                title: currentTTSSession.articleDetails.title,
-                isChunk: currentTTSSession.chunks.length > 1,
-                currentChunkIndex: currentTTSSession.currentIndex,
-                totalChunks: currentTTSSession.chunks.length,
-            } : null,
+            totalChunks: currentTTSSession.chunks ? currentTTSSession.chunks.length : 0,
+            articleDetails: articleDetailsForPopup,
         };
         sendResponse({ action: "activeSessionState", sessionData: sessionDataForPopup });
         return false;
     }
 
-    if (request.action === "resumeTTSSession" && typeof request.resumeFromChunkIndex === 'number') { /* ... */
+    if (request.action === "resumeTTSSession" && typeof request.resumeFromChunkIndex === 'number') {
         console.log("[Service Worker] Popup requested to resume session from chunk index:", request.resumeFromChunkIndex);
-        if (currentTTSSession.chunks.length > 0 && request.resumeFromChunkIndex < currentTTSSession.chunks.length) {
+        if (currentTTSSession.chunks && currentTTSSession.chunks.length > 0 && request.resumeFromChunkIndex < currentTTSSession.chunks.length) {
             currentTTSSession.isActive = true;
-            // isPlayingInPopup will be set by processAndSendChunkToPopup
             currentTTSSession.currentIndex = request.resumeFromChunkIndex;
 
             (async () => {
@@ -472,6 +516,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             console.warn("[Service Worker] Cannot resume: No valid session or invalid chunk index.");
             resetTTSSession();
             sendResponse({ success: false, error: "No valid session to resume or invalid index." });
+        }
+        return true;
+    }
+
+    if (request.action === "jumpToChunk" && typeof request.jumpToChunkIndex === 'number') {
+        const jumpToIndex = request.jumpToChunkIndex;
+        console.log(`[Service Worker] Popup requested to jump to chunk index: ${jumpToIndex}`);
+        if (currentTTSSession.isActive && currentTTSSession.chunks && jumpToIndex >= 0 && jumpToIndex < currentTTSSession.chunks.length) {
+            currentTTSSession.currentIndex = jumpToIndex;
+            currentTTSSession.isPlayingInPopup = true;
+            currentTTSSession.prefetchedAudioDataUrlForNext = null;
+            currentTTSSession.isCurrentlyPrefetching = false;
+
+            (async () => {
+                await openOrFocusTTSPopout();
+                if (ttsPopoutWindowId) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    processAndSendChunkToPopup(currentTTSSession.currentIndex);
+                    attemptToPrefetchNextChunk();
+                    sendResponse({ success: true, message: `Jumping to chunk ${jumpToIndex + 1}` });
+                } else {
+                    console.error("[Service Worker] Cannot jump to chunk, TTS popout window not available.");
+                    resetTTSSession();
+                    sendResponse({ success: false, error: "TTS window not available for chunk jump." });
+                }
+            })();
+        } else {
+            console.warn("[Service Worker] Cannot jump to chunk: No active session or invalid index.");
+            sendResponse({ success: false, error: "No active session or invalid chunk index for jump." });
         }
         return true;
     }

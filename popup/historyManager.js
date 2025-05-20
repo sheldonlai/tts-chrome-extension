@@ -3,12 +3,11 @@
 var HistoryManager = (function () {
     const MAX_HISTORY_ITEMS_CONST = 10;
 
-    // Module-scoped variables
     let historyListElementRef;
     let clearHistoryBtnRef;
     let playAudioFromHistoryCallback;
-    let stopAndResetAudioPlayerCallbackH; // Renamed to avoid conflict if not careful
-    let showLoaderCallbackH; // Renamed
+    let stopAndResetAudioPlayerCallbackH;
+    let showLoaderCallbackH;
 
     function init(elements, callbacks) {
         console.log("[HistoryManager] Initializing...");
@@ -19,43 +18,62 @@ var HistoryManager = (function () {
         stopAndResetAudioPlayerCallbackH = callbacks.stopAndResetAudioPlayer;
         showLoaderCallbackH = callbacks.showLoader;
 
-        if (clearHistoryBtnRef) {
+        if (!historyListElementRef) {
+            console.error("[HistoryManager] historyListElementRef not provided during init.");
+        }
+        if (!clearHistoryBtnRef) {
+            console.error("[HistoryManager] clearHistoryBtnRef not provided during init.");
+        } else {
             clearHistoryBtnRef.addEventListener('click', async () => {
                 if (confirm("Are you sure you want to clear all TTS history?")) {
                     try {
-                        stopAndResetAudioPlayerCallbackH("History cleared.");
+                        if (typeof stopAndResetAudioPlayerCallbackH === 'function') {
+                            stopAndResetAudioPlayerCallbackH("History cleared.");
+                        }
                         await chrome.storage.local.set({ ttsHistory: [] });
+                        console.log("[HistoryManager] Cleared all history from storage.");
                         loadHistory();
                     } catch (e) {
                         console.error("[HistoryManager] Error clearing history:", e);
                     }
                 }
             });
-        } else {
-            console.error("[HistoryManager] Clear history button not provided during init.");
         }
         loadHistory();
-        console.log("[HistoryManager] Initialized and history loaded.");
+        console.log("[HistoryManager] Initialized and history load attempted.");
     }
 
     async function loadHistory() {
-        if (!historyListElementRef) return;
+        console.log("[HistoryManager] loadHistory called.");
+        if (!historyListElementRef) {
+            console.error("[HistoryManager] Cannot load history, historyListElementRef is null.");
+            return;
+        }
         try {
             const result = await chrome.storage.local.get(['ttsHistory']);
             const history = result.ttsHistory || [];
+            console.log("[HistoryManager] Loaded from storage:", history);
+
             historyListElementRef.innerHTML = '';
             if (history.length === 0) {
+                console.log("[HistoryManager] History is empty. Displaying 'No history yet.'");
                 const li = document.createElement('li');
                 li.textContent = "No history yet.";
                 li.style.cursor = 'default';
                 historyListElementRef.appendChild(li);
-                if (clearHistoryBtnRef) clearHistoryBtnRef.style.display = 'none';
             } else {
+                console.log(`[HistoryManager] Populating ${history.length} history items.`);
                 history.forEach(item => addHistoryItemToDOM(item.text, item.audioDataUrl, false, item.title || item.text));
-                if (clearHistoryBtnRef) clearHistoryBtnRef.style.display = 'block';
+            }
+
+            if (typeof updateClearHistoryButtonVisibility === 'function') {
+                console.log("[HistoryManager] Calling updateClearHistoryButtonVisibility after loading history.");
+                updateClearHistoryButtonVisibility();
+            } else {
+                console.warn("[HistoryManager] updateClearHistoryButtonVisibility function not found from uiHelpers after loadHistory.");
             }
         } catch (e) {
-            console.error("[HistoryManager] Error loading history:", e);
+            console.error("[HistoryManager] Error loading history from storage:", e);
         }
     }
 
@@ -75,7 +93,7 @@ var HistoryManager = (function () {
                 history = history.slice(0, MAX_HISTORY_ITEMS_CONST);
             }
             await chrome.storage.local.set({ ttsHistory: history });
-            console.log("[HistoryManager] Saved item to history storage:", articleTitle);
+            console.log("[HistoryManager] Saved item to history storage. Title:", articleTitle, "Text snippet:", text.substring(0, 30) + "...");
             return true;
         } catch (e) {
             console.error("[HistoryManager] Error saving item to history storage:", e);
@@ -84,11 +102,16 @@ var HistoryManager = (function () {
     }
 
     function addHistoryItemToDOM(text, audioDataUrl, saveToStorage = true, displayTitle) {
-        if (!historyListElementRef) return;
+        console.log("[HistoryManager] addHistoryItemToDOM called. Display Title:", displayTitle, "Save to storage:", saveToStorage);
+        if (!historyListElementRef) {
+            console.error("[HistoryManager] Cannot add history item to DOM, historyListElementRef is null.");
+            return;
+        }
 
         for (let i = 0; i < historyListElementRef.children.length; i++) {
             const child = historyListElementRef.children[i];
             if (child.dataset.fullText === text) {
+                console.log("[HistoryManager] Removing duplicate visual history item for text:", text.substring(0, 30) + "...");
                 child.remove();
                 break;
             }
@@ -101,7 +124,7 @@ var HistoryManager = (function () {
         li.dataset.fullText = text;
 
         const textSpan = document.createElement('span');
-        textSpan.className = 'history-text';
+        textSpan.className = 'list-text';
         textSpan.textContent = displayTitle;
         textSpan.title = text;
         li.appendChild(textSpan);
@@ -114,14 +137,25 @@ var HistoryManager = (function () {
             event.stopPropagation();
             await removeHistoryItem(text);
             li.remove();
-            if (historyListElementRef.children.length === 0) loadHistory();
+            if (historyListElementRef.children.length === 0) {
+                loadHistory();
+            } else {
+                if (typeof updateClearHistoryButtonVisibility === 'function') {
+                    console.log("[HistoryManager] Calling updateClearHistoryButtonVisibility after deleting item.");
+                    updateClearHistoryButtonVisibility();
+                }
+            }
         };
         li.appendChild(deleteBtn);
 
         li.onclick = () => {
             console.log("[HistoryManager] Playing from history. Display title:", displayTitle);
-            stopAndResetAudioPlayerCallbackH("Loading from history...");
-            showLoaderCallbackH("Loading from history...");
+            if (typeof stopAndResetAudioPlayerCallbackH === 'function') {
+                stopAndResetAudioPlayerCallbackH("Loading from history...");
+            }
+            if (typeof showLoaderCallbackH === 'function') {
+                showLoaderCallbackH("Loading from history...");
+            }
 
             const historyArticleDetails = {
                 title: displayTitle,
@@ -130,7 +164,11 @@ var HistoryManager = (function () {
                 isLastChunk: true,
                 isActiveSession: true
             };
-            playAudioFromHistoryCallback(audioDataUrl, text, historyArticleDetails);
+            if (typeof playAudioFromHistoryCallback === 'function') {
+                playAudioFromHistoryCallback(audioDataUrl, text, historyArticleDetails);
+            } else {
+                console.error("[HistoryManager] playAudioFromHistoryCallback is not defined!");
+            }
         };
         historyListElementRef.insertBefore(li, historyListElementRef.firstChild);
         if (historyListElementRef.children.length > MAX_HISTORY_ITEMS_CONST) {
@@ -140,7 +178,12 @@ var HistoryManager = (function () {
         if (saveToStorage) {
             addHistoryItemToStorage(text, audioDataUrl, displayTitle);
         }
-        if (clearHistoryBtnRef) clearHistoryBtnRef.style.display = 'block';
+
+        if (typeof updateClearHistoryButtonVisibility === 'function') {
+            console.log("[HistoryManager] Calling updateClearHistoryButtonVisibility after adding item to DOM.");
+            updateClearHistoryButtonVisibility();
+        }
+        console.log("[HistoryManager] History item added to DOM:", displayTitle);
     }
 
     async function removeHistoryItem(textToRemove) {
@@ -149,16 +192,14 @@ var HistoryManager = (function () {
             let history = result.ttsHistory || [];
             history = history.filter(item => item.text !== textToRemove);
             await chrome.storage.local.set({ ttsHistory: history });
-            console.log("[HistoryManager] Removed item from history:", textToRemove.substring(0, 50) + "...");
+            console.log("[HistoryManager] Removed item from history storage:", textToRemove.substring(0, 50) + "...");
         } catch (e) {
             console.error("[HistoryManager] Error removing item from history storage:", e);
         }
     }
 
-    // Public API for this module
     return {
         init: init,
-        addHistoryItemToDOM: addHistoryItemToDOM // Expose if main popup.js needs to call it directly
-        // loadHistory is called internally on init
+        addHistoryItemToDOM: addHistoryItemToDOM
     };
 })();
