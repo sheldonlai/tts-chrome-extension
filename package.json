@@ -1,0 +1,19 @@
+{
+  "name": "lux-text-to-speech-chrome-extension",
+  "version": "1.0.0",
+  "main": "background.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "copy-libs": "cpy node_modules/@mozilla/readability/Readability.js lib"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@mozilla/readability": "0.6.0"
+  },
+  "devDependencies": {
+    "cpy-cli": "^5.0.0" 
+  }
+}

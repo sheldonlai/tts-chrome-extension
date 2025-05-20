@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text-to-Speech</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+            width: 380px;
+            padding: 15px;
+            text-align: center;
+            background-color: #f4f6f8;
+            color: #333;
+            box-sizing: border-box;
+            margin: 0;
+        }
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+
+        /* Current Session Info Styling */
+        #currentSessionInfo {
+            background-color: #e9ecef;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 0.85em;
+            color: #495057;
+            min-height: 30px;
+            /* Ensure space even when empty */
+            text-align: left;
+        }
+
+        #currentSessionTitle {
+            font-weight: bold;
+            display: block;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        #currentSessionChunkInfo {
+            font-size: 0.9em;
+        }
+
+        #resumeButton {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            margin-top: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            display: none;
+            /* Hidden by default */
+        }
+
+        #resumeButton:hover {
+            background-color: #218838;
+        }
+
+        #statusMessage {
+            margin-top: 10px;
+            font-style: italic;
+            min-height: 20px;
+            color: #555;
+            word-wrap: break-word;
+            font-size: 0.9em;
+        }
+
+        audio#popupAudioPlayer {
+            width: 100%;
+            margin-top: 10px;
+            /* Reduced margin */
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .loader#loadingIndicator {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 15px auto;
+            /* Reduced margin */
+            display: none;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        #historyContainer {
+            margin-top: 15px;
+            /* Reduced margin */
+            text-align: left;
+        }
+
+        #historyContainer h4 {
+            margin-bottom: 5px;
+            color: #2c3e50;
+            font-size: 1em;
+            text-align: center;
+        }
+
+        ul#historyList {
+            list-style-type: none;
+            padding: 0;
+            max-height: 120px;
+            /* Adjusted height */
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fff;
+            margin-bottom: 10px;
+        }
+
+        #historyList li {
+            padding: 8px 10px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            font-size: 0.9em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #historyList li:last-child {
+            border-bottom: none;
+        }
+
+        #historyList li:hover {
+            background-color: #e9ecef;
+        }
+
+        .history-text {
+            flex-grow: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 10px;
+        }
+
+        .delete-history-item {
+            background: none;
+            border: none;
+            color: #e74c3c;
+            cursor: pointer;
+            font-size: 1.1em;
+            padding: 2px 5px;
+            line-height: 1;
+        }
+
+        .delete-history-item:hover {
+            color: #c0392b;
+        }
+
+        button#clearHistoryBtn {
+            background-color: #7f8c8d;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            margin-top: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            display: block;
+            width: fit-content;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        button#clearHistoryBtn:hover {
+            background-color: #95a5a6;
+        }
+    </style>
+</head>
+
+<body>
+    <h3>Text-to-Speech</h3>
+
+    <div id="currentSessionInfo">
+        <span id="currentSessionTitle"></span>
+        <span id="currentSessionChunkInfo"></span>
+        <button id="resumeButton">Resume Reading</button>
+    </div>
+
+    <div class="loader" id="loadingIndicator"></div>
+    <audio id="popupAudioPlayer" controls></audio>
+    <div id="statusMessage">Waiting for text...</div>
+
+    <div id="historyContainer">
+        <h4>History</h4>
+        <ul id="historyList">
+        </ul>
+        <button id="clearHistoryBtn" title="Clear all TTS history">Clear History</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
