@@ -9,13 +9,17 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
             width: 380px;
+            min-height: 550px;
             padding: 10px;
+            padding-bottom: 40px;
             text-align: center;
             background-color: #f4f6f8;
             color: #333;
             box-sizing: border-box;
             margin: 0;
             font-size: 14px;
+            overflow-x: hidden;
+            position: relative;
         }
 
         h3 {
@@ -30,14 +34,16 @@
             padding: 8px;
             border-radius: 4px;
             margin-bottom: 8px;
+            /* This margin is between session info and player */
             font-size: 0.9em;
             color: #495057;
             min-height: 25px;
+            /* Approximate height of one line of text */
             text-align: left;
         }
 
         #currentSessionTitle {
-            font-weight: bold;
+            /* font-weight: bold; Removed bolding */
             display: block;
             white-space: nowrap;
             overflow: hidden;
@@ -53,12 +59,13 @@
             background-color: #28a745;
             color: white;
             border: none;
-            padding: 6px 10px;
+            padding: 6px 12px;
             margin-top: 5px;
             border-radius: 5px;
             cursor: pointer;
             font-size: 0.85em;
             display: none;
+            transition: background-color 0.2s ease-in-out;
         }
 
         #resumeButton:hover {
@@ -67,6 +74,7 @@
 
         #statusMessage {
             margin-top: 8px;
+            /* Margin above status message */
             font-style: italic;
             min-height: 18px;
             color: #555;
@@ -74,11 +82,22 @@
             font-size: 0.85em;
         }
 
+        /* Wrapper for player and session info to manage visibility and height */
+        #playerAreaWrapper {
+            /* Approximate combined min-height of session info and player + margins */
+            /* min-height: 85px;  Let content define height, loader will match */
+            margin-bottom: 8px;
+            /* Margin below the player area (before status message) */
+        }
+
+
         audio#popupAudioPlayer {
             width: 100%;
-            margin-top: 8px;
+            /* margin-top: 8px; This margin is now handled by #currentSessionInfo's margin-bottom */
             border-radius: 5px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            height: 40px;
+            /* Standard height for audio controls */
         }
 
         .loader#loadingIndicator {
@@ -90,7 +109,25 @@
             animation: spin 1s linear infinite;
             margin: 10px auto;
             display: none;
+            /* Set min-height to match playerAreaWrapper's typical content */
+            /* min-height: approx 70px (session info) + 40px (player) + 8px (margin) = 118px */
+            /* Let's try to make it occupy space of playerAreaWrapper + statusMessage */
+            min-height: 100px;
+            /* Adjust this value based on actual rendered height of playerAreaWrapper */
+            display: flex;
+            /* To center the spinner vertically if needed */
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 8px;
+            /* Match playerAreaWrapper's margin-bottom */
         }
+
+        .loader-spinner {
+            /* Actual spinner element if needed, or style .loader directly */
+            width: 25px;
+            height: 25px;
+        }
+
 
         @keyframes spin {
             0% {
@@ -105,6 +142,7 @@
         .list-container {
             margin-top: 12px;
             text-align: left;
+            margin-bottom: 15px;
         }
 
         .list-container h4 {
@@ -113,77 +151,112 @@
             color: #2c3e50;
             font-size: 1em;
             text-align: center;
-            padding: 8px 5px;
+            padding: 10px 8px;
             background-color: #dde2e7;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+            border: 1px solid #c8ced3;
+            border-radius: 6px;
             cursor: pointer;
             position: relative;
             user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s ease-in-out;
         }
 
+        .list-container h4:hover {
+            background-color: #d1d8de;
+        }
+
+        .list-container h4 .icon {
+            margin-left: 8px;
+            font-size: 0.8em;
+            transition: transform 0.3s ease-in-out;
+            display: inline-block;
+        }
+
+        .list-container h4.expanded-header .icon {
+            transform: rotate(90deg);
+        }
+
+
         .list-container h4.collapsed-header {
-            border-radius: 4px;
+            border-radius: 6px;
         }
 
         .list-container h4.expanded-header {
             border-bottom-left-radius: 0;
             border-bottom-right-radius: 0;
-            border-bottom: 1px dashed #ccc;
+            border-bottom: 1px dashed #c8ced3;
         }
 
-        .list-container ul {
+        .list-container ul#historyList {
+            list-style-type: none;
+            padding: 0;
+            max-height: 120px;
+            overflow-y: auto;
+            border: 1px solid #d1d8de;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            background-color: #fff;
+            margin-top: 0;
+            transition: max-height 0.3s ease-in-out, opacity 0.3s ease-in-out, border-width 0.3s ease-in-out, padding 0.3s ease-in-out;
+            opacity: 1;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .list-container ul#sessionQueueList {
             list-style-type: none;
             padding: 0;
             max-height: 100px;
             overflow-y: auto;
-            border: 1px solid #ddd;
+            border: 1px solid #d1d8de;
             border-top: none;
-            border-radius: 0 0 5px 5px;
+            border-radius: 0 0 6px 6px;
             background-color: #fff;
             margin-top: 0;
-            margin-bottom: 8px;
-            transition: max-height 0.3s ease-in-out, border-width 0.3s ease-in-out, opacity 0.3s ease-in-out;
+            transition: max-height 0.3s ease-in-out, opacity 0.3s ease-in-out, border-width 0.3s ease-in-out, padding 0.3s ease-in-out;
             opacity: 1;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
         }
+
 
         .list-container ul.collapsed {
             max-height: 0;
+            opacity: 0;
+            overflow: hidden;
             border-bottom-width: 0;
             border-left-width: 0;
             border-right-width: 0;
             padding-top: 0;
             padding-bottom: 0;
-            opacity: 0;
-            overflow: hidden;
         }
 
-        .list-container li {
-            padding: 7px 10px;
+        .list-container>ul>li {
+            padding: 8px 12px;
             border-bottom: 1px solid #eee;
             cursor: pointer;
             font-size: 0.85em;
-            /* Removed white-space, overflow, text-overflow from li directly */
             display: flex;
             justify-content: space-between;
             align-items: center;
+            transition: background-color 0.15s ease-in-out;
         }
 
-        .list-container li:last-child {
+        .list-container>ul>li:last-child {
             border-bottom: none;
         }
 
-        .list-container li:hover {
-            background-color: #e9ecef;
+        .list-container>ul>li:hover {
+            background-color: #e9f2f9;
         }
 
-        .list-container li.current-chunk {
-            background-color: #d1ecf1 !important;
+        ul#sessionQueueList>li.current-chunk {
+            background-color: #cce5ff !important;
             font-weight: bold;
-            color: #0c5460;
+            color: #004085;
         }
 
-        /* Apply truncation to the text span within list items */
         .list-text {
             flex-grow: 1;
             white-space: nowrap;
@@ -192,39 +265,98 @@
             margin-right: 10px;
         }
 
+        li.history-group {
+            padding: 0;
+            cursor: default;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        li.history-group:last-child {
+            border-bottom: none;
+        }
+
+
+        .history-group-prefix {
+            font-weight: bold;
+            color: #333;
+            padding: 8px 12px;
+            display: block;
+            background-color: #f8f9fa;
+            cursor: default;
+        }
+
+        ul.history-group-items {
+            list-style-type: none;
+            padding-left: 0;
+            margin: 0;
+        }
+
+        ul.history-group-items>li {
+            padding: 7px 12px 7px 25px;
+            border-bottom: 1px dotted #f0f0f0;
+            cursor: pointer;
+            font-size: 0.85em;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.15s ease-in-out;
+        }
+
+        ul.history-group-items>li:last-child {
+            border-bottom: none;
+        }
+
+        ul.history-group-items>li:hover {
+            background-color: #eef5fc;
+        }
+
+        ul.history-group-items>li .list-text::before {
+            content: "– ";
+            margin-right: 5px;
+            color: #555;
+        }
+
+
         .delete-history-item {
             background: none;
             border: none;
-            color: #e74c3c;
+            color: #dc3545;
             cursor: pointer;
-            font-size: 1.1em;
+            font-size: 1.2em;
             padding: 2px 5px;
             line-height: 1;
             flex-shrink: 0;
-            /* Prevent delete button from shrinking */
+            transition: color 0.15s ease-in-out;
         }
 
         .delete-history-item:hover {
-            color: #c0392b;
+            color: #c82333;
+        }
+
+        #clearAllDataContainer {
+            position: absolute;
+            bottom: 10px;
+            left: 0;
+            width: 100%;
+            text-align: center;
         }
 
         button#clearHistoryBtn {
-            background-color: #7f8c8d;
-            color: white;
+            background-color: transparent;
+            color: #6c757d;
             border: none;
-            padding: 6px 10px;
-            margin-top: 0px;
-            border-radius: 5px;
+            padding: 5px 10px;
+            border-radius: 4px;
             cursor: pointer;
-            font-size: 0.85em;
-            display: block;
-            width: fit-content;
-            margin-left: auto;
-            margin-right: auto;
+            font-size: 0.8em;
+            text-decoration: underline;
+            display: inline-block;
+            transition: color 0.2s ease-in-out;
         }
 
         button#clearHistoryBtn:hover {
-            background-color: #95a5a6;
+            color: #dc3545;
+            text-decoration: underline;
         }
     </style>
 </head>
@@ -232,25 +364,33 @@
 <body>
     <h3>Text-to-Speech</h3>
 
-    <div id="currentSessionInfo">
-        <span id="currentSessionTitle"></span>
-        <span id="currentSessionChunkInfo"></span>
-        <button id="resumeButton">Resume Reading</button>
+    <div id="playerAreaWrapper">
+        <div id="currentSessionInfo">
+            <span id="currentSessionTitle"></span>
+            <span id="currentSessionChunkInfo"></span>
+            <button id="resumeButton">Resume Reading</button>
+        </div>
+        <audio id="popupAudioPlayer" controls controlsList="nodownload"></audio>
     </div>
 
-    <div class="loader" id="loadingIndicator"></div>
-    <audio id="popupAudioPlayer" controls controlsList="nodownload"></audio>
+    <div class="loader" id="loadingIndicator">
+        <div class="loader-spinner"></div>
+    </div>
+
     <div id="statusMessage">Waiting for text...</div>
 
     <div id="sessionQueueContainer" class="list-container" style="display: none;">
-        <h4 id="toggleSessionQueue" class="expanded-header">Current Session Chunks ▼</h4>
+        <h4 id="toggleSessionQueue" class="expanded-header">Current Session Chunks <span class="icon">▶</span></h4>
         <ul id="sessionQueueList"></ul>
     </div>
 
     <div id="historyContainer" class="list-container">
-        <h4 id="toggleHistoryList" class="collapsed-header">History ▶</h4>
-        <ul id="historyList" class="collapsed"> </ul>
-        <button id="clearHistoryBtn" title="Clear all TTS history" style="display: none;">Clear History</button>
+        <h4 id="toggleHistoryList" class="collapsed-header">History <span class="icon">▶</span></h4>
+        <ul id="historyList" class="collapsed"></ul>
+    </div>
+
+    <div id="clearAllDataContainer">
+        <button id="clearHistoryBtn" title="Clear all TTS history and reset player">Clear All Data</button>
     </div>
 
     <script src="cacheUtils.js"></script>

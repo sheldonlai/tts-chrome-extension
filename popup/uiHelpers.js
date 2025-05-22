@@ -20,29 +20,23 @@ function getUIElements() {
         historyContainer: document.getElementById('historyContainer'),
         historyListElement: document.getElementById('historyList'),
         toggleHistoryListBtn: document.getElementById('toggleHistoryList'),
-        clearHistoryBtn: document.getElementById('clearHistoryBtn')
+        clearHistoryBtn: document.getElementById('clearHistoryBtn'),
+
+        playerAreaWrapper: document.getElementById('playerAreaWrapper') // Added wrapper
     };
 }
 
-function updateClearHistoryButtonVisibility() {
+window.updateClearHistoryButtonVisibility = function () {
     const ui = getUIElements();
-    if (!ui.historyListElement || !ui.clearHistoryBtn) {
+    if (!ui.clearHistoryBtn) {
+        console.warn("[uiHelpers] Clear All Data button not found during visibility check.");
         return;
     }
-    const isHistoryListCollapsed = ui.historyListElement.classList.contains('collapsed');
-    const hasHistoryItems = ui.historyListElement.children.length > 0 &&
-        !(ui.historyListElement.children.length === 1 && ui.historyListElement.firstChild.textContent === "No history yet.");
-
-    const newDisplay = (!isHistoryListCollapsed && hasHistoryItems) ? 'block' : 'none';
-    if (ui.clearHistoryBtn.style.display !== newDisplay) {
-        ui.clearHistoryBtn.style.display = newDisplay;
-    }
+    console.log("[uiHelpers] updateClearHistoryButtonVisibility called (button is always visible).");
 }
 
-// This function should be called ONLY ONCE from popup.js after DOMContentLoaded
 function setupCollapsibleLists() {
     console.log("[uiHelpers] setupCollapsibleLists invoked.");
-
     const ui = getUIElements();
 
     function toggleList(listElement, headerElement, storageKey) {
@@ -50,55 +44,43 @@ function setupCollapsibleLists() {
             console.warn("[uiHelpers] toggleList: Missing listElement or headerElement for:", headerElement ? headerElement.id : 'Unknown header');
             return;
         }
-        const wasCollapsed = listElement.classList.contains('collapsed');
-        const isNowCollapsed = listElement.classList.toggle('collapsed');
 
-        console.log(`[uiHelpers] Toggling list for ${headerElement.id}. Was collapsed: ${wasCollapsed}. Is NOW collapsed: ${isNowCollapsed}.`);
+        const isNowCollapsed = listElement.classList.toggle('collapsed');
+        console.log(`[uiHelpers] Toggling list for ${headerElement.id}. Is NOW collapsed: ${isNowCollapsed}.`);
 
         headerElement.classList.toggle('collapsed-header', isNowCollapsed);
         headerElement.classList.toggle('expanded-header', !isNowCollapsed);
 
-        if (isNowCollapsed) {
-            headerElement.textContent = headerElement.textContent.replace('▼', '▶');
-        } else {
-            headerElement.textContent = headerElement.textContent.replace('▶', '▼');
-        }
-
         if (storageKey) {
-            chrome.storage.local.set({ [storageKey]: isNowCollapsed });
-        }
-
-        if (listElement.id === 'historyList') {
-            updateClearHistoryButtonVisibility();
+            chrome.storage.local.set({ [storageKey]: isNowCollapsed }, () => {
+                if (chrome.runtime.lastError) {
+                    console.error(`[uiHelpers] Error saving collapse state for ${storageKey}:`, chrome.runtime.lastError.message);
+                }
+            });
         }
     }
 
     if (ui.toggleSessionQueueBtn && ui.sessionQueueList) {
-        // Simplified listener attachment (assuming setupCollapsibleLists is called once)
         ui.toggleSessionQueueBtn.addEventListener('click', () => {
             console.log("[uiHelpers] toggleSessionQueueBtn CLICKED.");
             toggleList(ui.sessionQueueList, ui.toggleSessionQueueBtn);
         });
-        console.log("[uiHelpers] Session queue toggle listener ATTACHED to element:", ui.toggleSessionQueueBtn);
-
-        // Initial arrow state for session queue
-        if (ui.sessionQueueList.classList.contains('collapsed')) {
-            ui.toggleSessionQueueBtn.textContent = ui.toggleSessionQueueBtn.textContent.replace('▼', '▶');
-            ui.toggleSessionQueueBtn.classList.add('collapsed-header');
-            ui.toggleSessionQueueBtn.classList.remove('expanded-header');
-        } else {
-            ui.toggleSessionQueueBtn.textContent = ui.toggleSessionQueueBtn.textContent.replace('▶', '▼');
-            ui.toggleSessionQueueBtn.classList.add('expanded-header');
-            ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
+        ui.toggleSessionQueueBtn.classList.add('expanded-header');
+        ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
+        if (ui.toggleSessionQueueBtn.classList.contains('expanded-header')) {
+            ui.sessionQueueList.classList.remove('collapsed');
         }
+        console.log("[uiHelpers] Session queue toggle listener ATTACHED.");
     } else {
         console.warn("[uiHelpers] Session queue toggle button or list not found during setup.");
     }
 
     if (ui.toggleHistoryListBtn && ui.historyListElement) {
         const historyCollapsedKey = 'historyListCollapsed';
-
         chrome.storage.local.get([historyCollapsedKey], (result) => {
+            if (chrome.runtime.lastError) {
+                console.error(`[uiHelpers] Error getting collapse state for ${historyCollapsedKey}:`, chrome.runtime.lastError.message);
+            }
             const shouldBeCollapsed = result[historyCollapsedKey] !== undefined ? result[historyCollapsedKey] : true;
             console.log(`[uiHelpers] Initial history collapsed state from storage for ${historyCollapsedKey}: ${shouldBeCollapsed}`);
 
@@ -106,26 +88,22 @@ function setupCollapsibleLists() {
                 ui.historyListElement.classList.add('collapsed');
                 ui.toggleHistoryListBtn.classList.add('collapsed-header');
                 ui.toggleHistoryListBtn.classList.remove('expanded-header');
-                ui.toggleHistoryListBtn.textContent = ui.toggleHistoryListBtn.textContent.replace('▼', '▶');
             } else {
                 ui.historyListElement.classList.remove('collapsed');
                 ui.toggleHistoryListBtn.classList.remove('collapsed-header');
                 ui.toggleHistoryListBtn.classList.add('expanded-header');
-                ui.toggleHistoryListBtn.textContent = ui.toggleHistoryListBtn.textContent.replace('▶', '▼');
             }
-            updateClearHistoryButtonVisibility();
+            window.updateClearHistoryButtonVisibility();
         });
 
-        // Simplified listener attachment (assuming setupCollapsibleLists is called once)
-        console.log("[uiHelpers] Attempting to attach listener to toggleHistoryListBtn:", ui.toggleHistoryListBtn);
-        if (ui.toggleHistoryListBtn instanceof HTMLElement) { // Check if it's a valid element
+        if (ui.toggleHistoryListBtn instanceof HTMLElement) {
             ui.toggleHistoryListBtn.addEventListener('click', () => {
                 console.log("[uiHelpers] toggleHistoryListBtn CLICKED.");
                 toggleList(ui.historyListElement, ui.toggleHistoryListBtn, historyCollapsedKey);
             });
             console.log("[uiHelpers] History list toggle listener ATTACHED.");
         } else {
-            console.error("[uiHelpers] toggleHistoryListBtn is not a valid HTMLElement. Cannot attach listener.");
+            console.error("[uiHelpers] toggleHistoryListBtn is not a valid HTMLElement.");
         }
     } else {
         console.warn("[uiHelpers] History list toggle button or list not found during setup.");
@@ -137,6 +115,7 @@ function setupCollapsibleLists() {
 function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
     const ui = getUIElements();
     if (!ui.currentSessionInfoDiv || !ui.currentSessionTitleSpan || !ui.currentSessionChunkInfoSpan || !ui.resumeButton || !ui.statusMessage || !ui.audioPlayer || !ui.sessionQueueContainer) {
+        console.warn("[uiHelpers] Missing elements for updateSessionInfoDisplay.");
         return;
     }
 
@@ -184,8 +163,8 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
                 } else {
                     ui.currentSessionChunkInfoSpan.textContent = "(Session active)";
                 }
-                if (ui.statusMessage && !ui.statusMessage.textContent.startsWith("Playing") && !ui.statusMessage.textContent.startsWith("Loading") && !ui.statusMessage.textContent.startsWith("Finished")) {
-                    ui.statusMessage.textContent = "Session paused. Use player controls or resume.";
+                if (ui.statusMessage && !ui.statusMessage.textContent.startsWith("Playing") && !ui.statusMessage.textContent.startsWith("Loading") && !ui.statusMessage.textContent.startsWith("Finished") && !ui.statusMessage.textContent.startsWith("Error")) {
+                    ui.statusMessage.textContent = "Session paused. Use player controls to resume.";
                 }
             } else {
                 ui.resumeButton.style.display = 'block';
@@ -210,16 +189,21 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
             ui.statusMessage.textContent.startsWith("Finished") ||
             ui.statusMessage.textContent.startsWith("Playing") ||
             ui.statusMessage.textContent.startsWith("Loading"))) {
-            ui.statusMessage.textContent = "Ready for audio.";
+            if (!ui.statusMessage.textContent.startsWith("Error") && !ui.statusMessage.textContent.startsWith("All data cleared")) {
+                ui.statusMessage.textContent = "Ready for audio.";
+            }
         }
     }
+    window.updateClearHistoryButtonVisibility();
 }
 
 function showLoader(message = "Processing...") {
     const ui = getUIElements();
-    if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'block';
+    if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'flex'; // Use flex for centering spinner
+    if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'none'; // Hide the player wrapper
     if (ui.statusMessage) ui.statusMessage.textContent = message;
-    if (ui.audioPlayer) ui.audioPlayer.style.display = 'none';
+
+    // It's good practice to pause audio if it's playing when loader is shown
     if (ui.audioPlayer && ui.audioPlayer.HAVE_CURRENT_DATA && !ui.audioPlayer.paused) {
         ui.audioPlayer.pause();
     }
@@ -230,7 +214,7 @@ function showLoader(message = "Processing...") {
 function hideLoader() {
     const ui = getUIElements();
     if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'none';
-    if (ui.audioPlayer) ui.audioPlayer.style.display = 'block';
+    if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'block'; // Show the player wrapper
     console.log("[uiHelpers] hideLoader called.");
 }
 
@@ -241,18 +225,19 @@ function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
         return;
     }
     ui.sessionQueueList.innerHTML = '';
+
     if (chunks && chunks.length > 1) {
         ui.sessionQueueContainer.style.display = 'block';
         if (ui.sessionQueueList.classList.contains('collapsed')) {
             ui.sessionQueueList.classList.remove('collapsed');
             ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
             ui.toggleSessionQueueBtn.classList.add('expanded-header');
-            ui.toggleSessionQueueBtn.textContent = ui.toggleSessionQueueBtn.textContent.replace('▶', '▼');
+        } else {
         }
+
 
         chunks.forEach((chunkText, index) => {
             const li = document.createElement('li');
-            li.className = 'list-text';
             li.textContent = `Part ${index + 1}: ${chunkText.substring(0, 50)}${chunkText.length > 50 ? '...' : ''}`;
             li.title = chunkText;
             if (index === currentChunkIndex) {
@@ -260,7 +245,9 @@ function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
             }
             li.dataset.chunkIndex = index;
             li.addEventListener('click', () => {
-                onChunkClickCallback(index);
+                if (typeof onChunkClickCallback === 'function') {
+                    onChunkClickCallback(index);
+                }
             });
             ui.sessionQueueList.appendChild(li);
         });
@@ -268,4 +255,3 @@ function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
         ui.sessionQueueContainer.style.display = 'none';
     }
 }
-

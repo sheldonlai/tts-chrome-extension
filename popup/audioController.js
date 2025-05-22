@@ -38,7 +38,7 @@ var AudioController = (function () {
             audioPlayerElement.onpause = onAudioPause;
             audioPlayerElement.onseeking = onAudioSeeking;
             audioPlayerElement.onseeked = onAudioSeeked;
-            audioPlayerElement.onended = onAudioEnded; // This will now be async
+            audioPlayerElement.onended = onAudioEnded;
             audioPlayerElement.onerror = onAudioError;
             console.log("[AudioController] Event listeners attached to audio player.");
         } else {
@@ -59,6 +59,7 @@ var AudioController = (function () {
         if (currentArticleDetailsState.value) currentArticleDetailsState.value.isActiveSession = true;
 
         // Show loader immediately when playAudio is called, before play() promise
+        // This loader will be very brief if the audio is already a data URL.
         showLoaderCallback(currentArticleDetailsState.value && currentArticleDetailsState.value.isChunk ?
             `Loading chunk ${currentArticleDetailsState.value.currentChunkIndex + 1}...` :
             "Loading audio...");
@@ -67,7 +68,7 @@ var AudioController = (function () {
         if (playPromise !== undefined) {
             playPromise.then(() => {
                 console.log("[AudioController] Playback initiated by browser for:", textToShow.substring(0, 50) + "...");
-                // Actual UI update to "playing" state is handled by onAudioPlay
+                // Actual UI update to "playing" state and hiding loader is handled by onAudioPlay
             })
                 .catch(error => {
                     console.error("[AudioController] Error calling audioPlayer.play():", error);
@@ -80,10 +81,9 @@ var AudioController = (function () {
                 });
         } else {
             console.log("[AudioController] Audio playback initiated (no promise).");
-            // For older browsers or scenarios where play() doesn't return a promise
             isAudioPlayingState.value = true;
             updateSessionInfoDisplayCallback();
-            hideLoaderCallback(); // Manually hide loader
+            hideLoaderCallback();
         }
     }
 
@@ -93,9 +93,9 @@ var AudioController = (function () {
             return;
         }
         console.log("[AudioController] Stopping and resetting audio player. Message:", resetMessage);
-        isHandlingAudioErrorState.value = true;
+        isHandlingAudioErrorState.value = true; // Prevent error loops during reset
         audioPlayerElement.pause();
-        if (audioPlayerElement.currentSrc && audioPlayerElement.currentSrc !== "") audioPlayerElement.src = '';
+        if (audioPlayerElement.currentSrc && audioPlayerElement.currentSrc !== "") audioPlayerElement.src = ''; // Clear source
 
         isAudioPlayingState.value = false;
         isCurrentlySeekingState.value = false;
@@ -104,8 +104,8 @@ var AudioController = (function () {
 
         if (statusMessageElement) statusMessageElement.textContent = resetMessage;
         updateSessionInfoDisplayCallback();
-        hideLoaderCallback(); // Ensure loader is hidden and player shown
-        setTimeout(() => { isHandlingAudioErrorState.value = false; }, 100);
+        hideLoaderCallback();
+        setTimeout(() => { isHandlingAudioErrorState.value = false; }, 100); // Reset error handling flag after a short delay
     }
 
     // --- Audio Element Event Handlers (private to this module) ---
@@ -113,14 +113,14 @@ var AudioController = (function () {
         console.log("[AudioController] Audio onplay event.");
         isAudioPlayingState.value = true;
         isCurrentlySeekingState.value = false;
-        hideLoaderCallback();
+        hideLoaderCallback(); // Hide loader once playback actually starts
         updateSessionInfoDisplayCallback();
     }
 
     function onAudioPause() {
         console.log("[AudioController] Audio onpause event. Seeking flag:", isCurrentlySeekingState.value);
         isAudioPlayingState.value = false;
-        if (!isCurrentlySeekingState.value) {
+        if (!isCurrentlySeekingState.value) { // Only update UI if not part of a seek operation
             if (currentArticleDetailsState.value && currentArticleDetailsState.value.isActiveSession) {
                 updateSessionInfoDisplayCallback();
             }
@@ -130,18 +130,20 @@ var AudioController = (function () {
     function onAudioSeeking() {
         console.log("[AudioController] Audio onseeking event.");
         isCurrentlySeekingState.value = true;
+        // Optionally show loader during seek if it's long, but usually seeks are fast
+        // showLoaderCallback("Seeking..."); 
     }
 
     function onAudioSeeked() {
         console.log("[AudioController] Audio onseeked event. Player paused after seek:", audioPlayerElement.paused);
         isCurrentlySeekingState.value = false;
-        if (audioPlayerElement.paused) {
+        // hideLoaderCallback(); // Hide loader if shown during seek
+        if (audioPlayerElement.paused) { // If seek was done while paused
             isAudioPlayingState.value = false;
         }
         updateSessionInfoDisplayCallback();
     }
 
-    // MODIFIED: onAudioEnded is now async
     async function onAudioEnded() {
         console.log("[AudioController] Audio playback finished (onended).");
         isAudioPlayingState.value = false;
@@ -150,15 +152,15 @@ var AudioController = (function () {
 
         if (details && details.isChunk && !details.isLastChunk) {
             console.log("[AudioController] Requesting next audio chunk. Current chunk was:", details.currentChunkIndex);
-            showLoaderCallback(`Loading next chunk (finished ${details.currentChunkIndex != null ? details.currentChunkIndex + 1 : 'current'})...`);
+            // REMOVED: showLoaderCallback call here. Loader will be handled by playAudio or explicit call in popup.js.
 
             try {
                 const response = await new Promise((resolve, reject) => {
-                    chrome.runtime.sendMessage({ action: "requestNextAudioChunk" }, (response) => {
+                    chrome.runtime.sendMessage({ action: "requestNextAudioChunk" }, (responseFromBg) => {
                         if (chrome.runtime.lastError) {
                             reject(new Error(chrome.runtime.lastError.message));
                         } else {
-                            resolve(response);
+                            resolve(responseFromBg);
                         }
                     });
                 });
@@ -168,16 +170,16 @@ var AudioController = (function () {
                     if (statusMessageElement) statusMessageElement.textContent = "Finished reading all content.";
                     if (currentArticleDetailsState.value) currentArticleDetailsState.value.isActiveSession = false;
                     updateSessionInfoDisplayCallback();
-                    currentArticleDetailsState.value = null;
-                    hideLoaderCallback();
+                    currentArticleDetailsState.value = null; // Clear details as session ended
+                    hideLoaderCallback(); // Ensure loader is hidden if it was somehow shown
                 }
                 // If status is "processingNextChunk" or "sentPrefetchedAudio", 
-                // background.js will send a new message to popup.js to play the next chunk.
-                // The loader will be hidden by the playAudio call for that new chunk.
+                // background.js will send a new message to popup.js.
+                // `popup.js` will then call `AudioController.playAudio` (for prefetched) or `showLoader` (for processing).
             } catch (error) {
                 console.error("[AudioController] Error requesting next chunk:", error.message);
                 if (statusMessageElement) statusMessageElement.textContent = "Error loading next chunk.";
-                hideLoaderCallback();
+                hideLoaderCallback(); // Ensure loader is hidden on error
             }
         } else { // Last chunk or not a chunked session
             if (statusMessageElement && statusMessageElement.textContent.startsWith("Playing")) {
@@ -187,8 +189,8 @@ var AudioController = (function () {
             }
             if (currentArticleDetailsState.value) currentArticleDetailsState.value.isActiveSession = false;
             updateSessionInfoDisplayCallback();
-            currentPlayingTextState.value = "";
-            currentArticleDetailsState.value = null;
+            currentPlayingTextState.value = ""; // Clear current playing text
+            currentArticleDetailsState.value = null; // Clear details
         }
     }
 
