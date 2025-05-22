@@ -40,17 +40,64 @@
             text-align: left;
         }
 
+        /* Styles for sliding title */
+        .title-marquee-wrapper {
+            overflow: hidden;
+            width: 100%;
+            height: 1.4em;
+            /* Adjust to fit one line of title text comfortably */
+            position: relative;
+            /* For positioning the span inside */
+            margin-bottom: 3px;
+            /* Matches original margin-bottom of title span */
+        }
+
         #currentSessionTitle {
             font-weight: 600;
-            display: block;
             white-space: nowrap;
+            /* margin-bottom: 3px; /* Moved to wrapper or handled by wrapper height */
+
+            /* For animation and default ellipsis */
+            position: absolute;
+            left: 0;
+            top: 0;
+            /* Align to top of wrapper */
+            line-height: 1.4em;
+            /* Match wrapper height */
+            transform: translateX(0);
+            /* Initial position */
+
+            /* Default behavior for non-sliding text */
+            width: 100%;
+            /* Take up wrapper width for ellipsis */
             overflow: hidden;
+            /* Required for ellipsis */
             text-overflow: ellipsis;
-            margin-bottom: 3px;
+            /* Default for non-sliding */
         }
+
+        #currentSessionTitle.sliding {
+            width: auto;
+            /* Allow its natural width when sliding */
+            overflow: visible;
+            /* No clipping by itself, wrapper does it */
+            text-overflow: clip;
+            /* No ellipsis during animation */
+            /* animation-name will be set by JS (e.g., dynamicMarquee-currentSessionTitle) */
+            animation-timing-function: linear;
+            animation-iteration-count: infinite;
+            /* animation-duration will be set by JS */
+            will-change: transform;
+            /* Performance hint */
+        }
+
+        /* Dynamic keyframes will be injected by uiHelpers.js */
+
 
         #currentSessionChunkInfo {
             font-size: 0.9em;
+            display: block;
+            /* Ensure it's on its own line after title wrapper */
         }
 
         #resumeButton {
@@ -72,7 +119,6 @@
 
         #statusMessage {
             margin-top: 8px;
-            /* Margin above status message */
             font-style: italic;
             min-height: 18px;
             color: #555;
@@ -80,19 +126,17 @@
             font-size: 0.85em;
         }
 
-        /* Wrapper for player and session info to manage visibility and height */
-        playerAreaWrapper {
+        #playerAreaWrapper {
+            /* Renamed from playerAreaWrapper to avoid conflict if it was a typo */
             margin-bottom: 8px;
         }
 
 
         audio#popupAudioPlayer {
             width: 100%;
-            /* margin-top: 8px; This margin is now handled by #currentSessionInfo's margin-bottom */
             border-radius: 5px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             height: 40px;
-            /* Standard height for audio controls */
         }
 
         .loader#loadingIndicator {
@@ -107,7 +151,6 @@
         }
 
         .loader-spinner {
-            /* Actual spinner element if needed, or style .loader directly */
             width: 25px;
             height: 25px;
         }
@@ -174,10 +217,12 @@
             border-bottom: 1px dashed #c8ced3;
         }
 
-        .list-container ul#historyList {
+        .list-container ul#historyList,
+        .list-container ul#sessionQueueList {
             list-style-type: none;
             padding: 0;
             max-height: 120px;
+            /* Adjusted for sessionQueueList too */
             overflow-y: auto;
             border: 1px solid #d1d8de;
             border-top: none;
@@ -189,20 +234,8 @@
             box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
         }
 
-        .list-container ul#sessionQueueList {
-            list-style-type: none;
-            padding: 0;
-            max-height: 100px;
-            overflow-y: auto;
-            border: 1px solid #d1d8de;
-            border-top: none;
-            border-radius: 0 0 6px 6px;
-            background-color: #fff;
-            margin-top: 0;
-            transition: max-height 0.3s ease-in-out, opacity 0.3s ease-in-out, border-width 0.3s ease-in-out, padding 0.3s ease-in-out;
-            opacity: 1;
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
-        }
+        /* Specific max-height for session queue if different */
+        /* .list-container ul#sessionQueueList { max-height: 100px; } */
 
 
         .list-container ul.collapsed {
@@ -350,7 +383,9 @@
 
     <div id="playerAreaWrapper">
         <div id="currentSessionInfo">
-            <span id="currentSessionTitle"></span>
+            <div class="title-marquee-wrapper">
+                <span id="currentSessionTitle"></span>
+            </div>
             <span id="currentSessionChunkInfo"></span>
             <button id="resumeButton">Resume Reading</button>
         </div>
@@ -376,6 +411,8 @@
     <div id="clearAllDataContainer">
         <button id="clearHistoryBtn" title="Clear all TTS history and reset player">Clear All Data</button>
     </div>
+
+    <style id="dynamicMarqueeStyles"></style>
 
     <script src="cacheUtils.js"></script>
     <script src="uiHelpers.js"></script>

@@ -19,7 +19,7 @@ function getUIElements() {
         toggleHistoryListBtn: document.getElementById('toggleHistoryList'),
         clearHistoryBtn: document.getElementById('clearHistoryBtn'),
 
-        playerAreaWrapper: document.getElementById('playerAreaWrapper')
+        playerAreaWrapper: document.getElementById('playerAreaWrapper') // Corrected ID
     };
 }
 
@@ -29,11 +29,11 @@ window.updateClearHistoryButtonVisibility = function () {
         console.warn("[uiHelpers] Clear All Data button not found during visibility check.");
         return;
     }
-    console.log("[uiHelpers] updateClearHistoryButtonVisibility called (button is always visible).");
+    // console.log("[uiHelpers] updateClearHistoryButtonVisibility called (button is always visible).");
 }
 
 function setupCollapsibleLists() {
-    console.log("[uiHelpers] setupCollapsibleLists invoked.");
+    // console.log("[uiHelpers] setupCollapsibleLists invoked.");
     const ui = getUIElements();
 
     function toggleList(listElement, headerElement, storageKey) {
@@ -43,7 +43,7 @@ function setupCollapsibleLists() {
         }
 
         const isNowCollapsed = listElement.classList.toggle('collapsed');
-        console.log(`[uiHelpers] Toggling list for ${headerElement.id}. Is NOW collapsed: ${isNowCollapsed}.`);
+        // console.log(`[uiHelpers] Toggling list for ${headerElement.id}. Is NOW collapsed: ${isNowCollapsed}.`);
 
         headerElement.classList.toggle('collapsed-header', isNowCollapsed);
         headerElement.classList.toggle('expanded-header', !isNowCollapsed);
@@ -59,15 +59,19 @@ function setupCollapsibleLists() {
 
     if (ui.toggleSessionQueueBtn && ui.sessionQueueList) {
         ui.toggleSessionQueueBtn.addEventListener('click', () => {
-            console.log("[uiHelpers] toggleSessionQueueBtn CLICKED.");
+            // console.log("[uiHelpers] toggleSessionQueueBtn CLICKED.");
             toggleList(ui.sessionQueueList, ui.toggleSessionQueueBtn);
         });
-        ui.toggleSessionQueueBtn.classList.add('expanded-header');
-        ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
-        if (ui.toggleSessionQueueBtn.classList.contains('expanded-header')) {
+        if (ui.sessionQueueContainer && ui.sessionQueueContainer.style.display !== 'none') {
+            ui.toggleSessionQueueBtn.classList.add('expanded-header');
+            ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
             ui.sessionQueueList.classList.remove('collapsed');
+        } else {
+            ui.toggleSessionQueueBtn.classList.add('collapsed-header');
+            ui.toggleSessionQueueBtn.classList.remove('expanded-header');
+            ui.sessionQueueList.classList.add('collapsed');
         }
-        console.log("[uiHelpers] Session queue toggle listener ATTACHED.");
+        // console.log("[uiHelpers] Session queue toggle listener ATTACHED.");
     } else {
         console.warn("[uiHelpers] Session queue toggle button or list not found during setup.");
     }
@@ -79,7 +83,7 @@ function setupCollapsibleLists() {
                 console.error(`[uiHelpers] Error getting collapse state for ${historyCollapsedKey}:`, chrome.runtime.lastError.message);
             }
             const shouldBeCollapsed = result[historyCollapsedKey] !== undefined ? result[historyCollapsedKey] : true;
-            console.log(`[uiHelpers] Initial history collapsed state from storage for ${historyCollapsedKey}: ${shouldBeCollapsed}`);
+            // console.log(`[uiHelpers] Initial history collapsed state from storage for ${historyCollapsedKey}: ${shouldBeCollapsed}`);
 
             if (shouldBeCollapsed) {
                 ui.historyListElement.classList.add('collapsed');
@@ -95,17 +99,17 @@ function setupCollapsibleLists() {
 
         if (ui.toggleHistoryListBtn instanceof HTMLElement) {
             ui.toggleHistoryListBtn.addEventListener('click', () => {
-                console.log("[uiHelpers] toggleHistoryListBtn CLICKED.");
+                // console.log("[uiHelpers] toggleHistoryListBtn CLICKED.");
                 toggleList(ui.historyListElement, ui.toggleHistoryListBtn, historyCollapsedKey);
             });
-            console.log("[uiHelpers] History list toggle listener ATTACHED.");
+            // console.log("[uiHelpers] History list toggle listener ATTACHED.");
         } else {
             console.error("[uiHelpers] toggleHistoryListBtn is not a valid HTMLElement.");
         }
     } else {
         console.warn("[uiHelpers] History list toggle button or list not found during setup.");
     }
-    console.log("[uiHelpers] Collapsible lists setup completed.");
+    // console.log("[uiHelpers] Collapsible lists setup completed.");
 }
 
 
@@ -121,8 +125,66 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
         let title = currentArticleDetails.title || "Reading in Progress";
         ui.currentSessionTitleSpan.textContent = title;
 
+        // Sliding title logic
+        const titleSpan = ui.currentSessionTitleSpan;
+        const wrapper = titleSpan.parentElement;
+
+        titleSpan.classList.remove('sliding');
+        titleSpan.style.animationName = '';
+        titleSpan.style.animationDuration = '';
+
+        void titleSpan.offsetWidth; // Force reflow
+
+        console.log(`[uiHelpers Title Check] Title: "${title}", scrollWidth: ${titleSpan.scrollWidth}, clientWidth: ${wrapper ? wrapper.clientWidth : 'N/A'}`);
+
+        if (wrapper && titleSpan.scrollWidth > wrapper.clientWidth) {
+            console.log("[uiHelpers Title Check] Applying sliding animation.");
+            const speed = 40; // pixels per second
+
+            const keyframesId = `dynamicMarquee-${titleSpan.id || 'currentSessionTitleMarquee'}`;
+            // Scroll from on-screen left to off-screen left, then repeat (reappears on-screen left)
+            const dynamicKeyframes = `
+                @keyframes ${keyframesId} {
+                    0%   { transform: translateX(0); } /* Start on-screen left */
+                    100% { transform: translateX(-${titleSpan.scrollWidth}px); } /* End off-screen left */
+                }
+            `;
+
+            let styleSheet = document.getElementById('dynamicMarqueeStyles');
+            if (styleSheet) {
+                styleSheet.innerHTML = dynamicKeyframes;
+            } else {
+                console.warn("[uiHelpers] Dynamic stylesheet for marquee not found.");
+            }
+
+            titleSpan.style.animationName = keyframesId;
+
+            // Duration for one full pass (from on-screen left to off-screen left)
+            const totalDistance = titleSpan.scrollWidth; // Only the part that scrolls off
+            let totalAnimationDuration = totalDistance / speed;
+
+            if (totalAnimationDuration < 3) totalAnimationDuration = 3;
+            if (totalAnimationDuration > 60) totalAnimationDuration = 60;
+
+            titleSpan.style.animationDuration = `${totalAnimationDuration}s`;
+            titleSpan.classList.add('sliding');
+        } else {
+            console.log("[uiHelpers Title Check] No overflow, not applying sliding animation.");
+            titleSpan.classList.remove('sliding');
+            titleSpan.style.animationName = '';
+            titleSpan.style.animationDuration = '';
+        }
+
+
         if (currentArticleDetails.isChunk && currentArticleDetails.totalChunks > 1) {
             ui.sessionQueueContainer.style.display = 'block';
+            if (ui.sessionQueueList && ui.sessionQueueList.classList.contains('collapsed')) {
+                ui.sessionQueueList.classList.remove('collapsed');
+                if (ui.toggleSessionQueueBtn) {
+                    ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
+                    ui.toggleSessionQueueBtn.classList.add('expanded-header');
+                }
+            }
         } else {
             ui.sessionQueueContainer.style.display = 'none';
         }
@@ -144,7 +206,7 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
             }
             ui.statusMessage.textContent = playingStatusText;
         } else {
-            if (ui.audioPlayer.currentSrc && ui.audioPlayer.currentSrc !== "") {
+            if (ui.audioPlayer.currentSrc && ui.audioPlayer.currentSrc !== "" && !ui.audioPlayer.ended) {
                 ui.resumeButton.style.display = 'none';
                 if (currentArticleDetails.isChunk && typeof currentArticleDetails.currentChunkIndex === 'number' && typeof currentArticleDetails.totalChunks === 'number') {
                     if (currentArticleDetails.totalChunks > 1) {
@@ -167,16 +229,30 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
                 } else if (!currentArticleDetails.isChunk && currentArticleDetails.textContent) {
                     ui.currentSessionChunkInfoSpan.textContent = "(Resume pending)";
                 } else {
-                    ui.currentSessionChunkInfoSpan.textContent = "(Session active, ready to start)";
+                    if (ui.audioPlayer.ended && currentArticleDetails.isLastChunk) {
+                        ui.currentSessionChunkInfoSpan.textContent = "(Finished)";
+                        ui.resumeButton.style.display = 'none';
+                    } else {
+                        ui.currentSessionChunkInfoSpan.textContent = "(Session active, ready to start)";
+                    }
                 }
-                if (ui.statusMessage) ui.statusMessage.textContent = "Session paused. Click Resume to continue.";
+                if (ui.statusMessage) {
+                    if (ui.audioPlayer.ended && currentArticleDetails.isLastChunk) {
+                        ui.statusMessage.textContent = "Finished reading all content.";
+                    } else {
+                        ui.statusMessage.textContent = "Session paused. Click Resume to continue.";
+                    }
+                }
             }
         }
     } else {
-        // ui.currentSessionInfoDiv.style.display = 'none';
+        ui.currentSessionInfoDiv.style.display = 'block';
         ui.resumeButton.style.display = 'none';
         ui.sessionQueueContainer.style.display = 'none';
         ui.currentSessionTitleSpan.textContent = 'Please select audio to play';
+        ui.currentSessionTitleSpan.classList.remove('sliding');
+        ui.currentSessionTitleSpan.style.animationName = '';
+        ui.currentSessionTitleSpan.style.animationDuration = '';
         ui.currentSessionChunkInfoSpan.textContent = '';
         if (ui.statusMessage && (ui.statusMessage.textContent.includes("Paused") ||
             ui.statusMessage.textContent.includes("Session active") ||
@@ -193,23 +269,26 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
 
 function showLoader(message = "Processing...") {
     const ui = getUIElements();
-    if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'flex'; // Use flex for centering spinner
-    if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'none'; // Hide the player wrapper
+    if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'flex';
+    if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'none';
     if (ui.statusMessage) ui.statusMessage.textContent = message;
 
-    // It's good practice to pause audio if it's playing when loader is shown
     if (ui.audioPlayer && ui.audioPlayer.HAVE_CURRENT_DATA && !ui.audioPlayer.paused) {
-        ui.audioPlayer.pause();
+        try {
+            ui.audioPlayer.pause();
+        } catch (e) {
+            console.warn("[uiHelpers] Error pausing audio in showLoader:", e);
+        }
     }
     if (ui.resumeButton) ui.resumeButton.style.display = 'none';
-    console.log("[uiHelpers] showLoader called. Message:", message);
+    // console.log("[uiHelpers] showLoader called. Message:", message);
 }
 
 function hideLoader() {
     const ui = getUIElements();
     if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'none';
-    if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'block'; // Show the player wrapper
-    console.log("[uiHelpers] hideLoader called.");
+    if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'block';
+    // console.log("[uiHelpers] hideLoader called.");
 }
 
 function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
@@ -222,11 +301,10 @@ function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
 
     if (chunks && chunks.length > 1) {
         ui.sessionQueueContainer.style.display = 'block';
-        if (ui.sessionQueueList.classList.contains('collapsed')) {
+        if (ui.toggleSessionQueueBtn && ui.sessionQueueList.classList.contains('collapsed')) {
             ui.sessionQueueList.classList.remove('collapsed');
             ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
             ui.toggleSessionQueueBtn.classList.add('expanded-header');
-        } else {
         }
 
 

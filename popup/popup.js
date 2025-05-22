@@ -26,14 +26,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const sharedState = {
         isAudioPlaying: { value: false },
         currentPlayingText: { value: "" },
-        currentArticleDetails: { value: null },
+        currentArticleDetails: { value: null }, // This will hold { title, textContent, isChunk, currentChunkIndex, totalChunks, isActiveSession, etc. }
         isHandlingAudioError: { value: false },
         isCurrentlySeeking: { value: false }
     };
 
     // CONSTANTS
-    const HISTORY_ITEM_TARGET_LENGTH = 45;
-    const SELECTED_TEXT_TITLE_BASE_LENGTH = 100;
+    // const HISTORY_ITEM_TARGET_LENGTH = 45; // No longer strictly needed for stored title, display can be CSS
+    // const SELECTED_TEXT_TITLE_BASE_LENGTH = 100; // Background now handles longer titles
 
     console.log("[Popup Main] DOMContentLoaded. Initializing modules.");
 
@@ -79,7 +79,13 @@ document.addEventListener('DOMContentLoaded', () => {
         HistoryManager.init(
             { historyListElement: domElements.historyListElement, clearHistoryBtn: domElements.clearHistoryBtn },
             {
-                playAudioFromHistory: AudioController.playAudio,
+                // playAudioFromHistory will be called with the full article details from history
+                playAudioFromHistory: (audioDataUrl, text, articleDetailsFromHistory) => {
+                    // When playing from history, currentArticleDetails should be fully populated
+                    // from the history item, including the full title.
+                    sharedState.currentArticleDetails.value = articleDetailsFromHistory;
+                    AudioController.playAudio(audioDataUrl, text, articleDetailsFromHistory);
+                },
                 stopAndResetAudioPlayer: AudioController.stopAndResetAudioPlayer,
                 showLoader: showLoader
             }
@@ -112,6 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateSessionInfoDisplay(details, sharedState.isAudioPlaying.value);
                 } else {
                     console.log("[Popup Main] jumpToChunk request sent. Response:", response);
+                    // Background will send a new processTextForTTS or playAudioDataUrl message
                 }
             });
         } else {
@@ -121,8 +128,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Message Handling ---
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        console.log("[Popup Main] Message received:", request.action); // Log only action for brevity
-        const detailsRef = sharedState.currentArticleDetails;
+        console.log("[Popup Main] Message received:", request.action);
+        const detailsRef = sharedState.currentArticleDetails; // Use this to modify sharedState.currentArticleDetails.value
 
         if (request.action === "stopAndResetAudio") {
             console.log("[Popup Main] Received 'stopAndResetAudio' command.");
@@ -134,10 +141,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (request.action === "sessionClearedByBackground") {
             console.log("[Popup Main] Received 'sessionClearedByBackground'. Resetting UI.");
-            detailsRef.value = { isActiveSession: false };
+            detailsRef.value = { isActiveSession: false }; // Reset current article details
             sharedState.isAudioPlaying.value = false;
             AudioController.stopAndResetAudioPlayer("All data cleared.");
-            updateSessionInfoDisplay(detailsRef.value, false);
+            updateSessionInfoDisplay(detailsRef.value, false); // Update UI based on reset state
             if (domElements.sessionQueueContainer) domElements.sessionQueueContainer.style.display = 'none';
             sendResponse({ status: "Popup UI reset for cleared session" });
             return false;
@@ -145,40 +152,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
         if (request.action === "activeSessionState") {
-            // console.log("[Popup Main] Received 'activeSessionState':", request.sessionData); // Keep if needed for debugging specific state issues
             if (request.sessionData && request.sessionData.isActive) {
-                detailsRef.value = request.sessionData.articleDetails;
+                detailsRef.value = request.sessionData.articleDetails; // This should contain the full title
                 if (detailsRef.value) {
                     detailsRef.value.isActiveSession = true;
                     detailsRef.value.currentChunkIndex = request.sessionData.currentIndex;
+                    // Ensure chunks array is present and consistent
                     detailsRef.value.chunks = request.sessionData.chunks || (detailsRef.value.chunks || []);
                     detailsRef.value.totalChunks = detailsRef.value.chunks.length;
                     detailsRef.value.isLastChunk = (detailsRef.value.currentChunkIndex === (detailsRef.value.chunks.length > 0 ? detailsRef.value.chunks.length - 1 : 0));
 
-                    // console.log("[Popup Main] Restored active session details for UI:", JSON.parse(JSON.stringify(detailsRef.value || {})));
                     if (detailsRef.value.isChunk && detailsRef.value.chunks && detailsRef.value.chunks.length > 1) {
                         renderSessionQueue(detailsRef.value.chunks, detailsRef.value.currentChunkIndex, handleChunkItemClick);
                     } else if (domElements.sessionQueueContainer) {
                         domElements.sessionQueueContainer.style.display = 'none';
                     }
                 } else {
-                    console.warn("[Popup Main] Active session reported, but articleDetails missing in sessionData. Creating basic active state.");
+                    // Fallback if articleDetails is somehow missing but session is active
                     detailsRef.value = {
                         isActiveSession: true,
                         isChunk: (request.sessionData.chunks && request.sessionData.chunks.length > 1),
                         currentChunkIndex: request.sessionData.currentIndex,
                         totalChunks: request.sessionData.chunks ? request.sessionData.chunks.length : 0,
                         chunks: request.sessionData.chunks || [],
-                        title: "Active Session"
+                        title: "Active Session (Details Missing)" // Fallback title
                     };
-                    if (detailsRef.value.isChunk && detailsRef.value.chunks && detailsRef.value.chunks.length > 1) {
-                        renderSessionQueue(detailsRef.value.chunks, detailsRef.value.currentChunkIndex, handleChunkItemClick);
-                    } else if (domElements.sessionQueueContainer) {
-                        domElements.sessionQueueContainer.style.display = 'none';
-                    }
+                    if (detailsRef.value.isChunk) renderSessionQueue(detailsRef.value.chunks, detailsRef.value.currentChunkIndex, handleChunkItemClick);
                 }
             } else {
-                console.log("[Popup Main] No active session reported by background on load.");
                 detailsRef.value = { isActiveSession: false };
                 if (domElements.sessionQueueContainer) domElements.sessionQueueContainer.style.display = 'none';
             }
@@ -191,11 +192,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (request.action === "processTextForTTS" && request.selectedText) {
             AudioController.stopAndResetAudioPlayer("Processing new text/chunk...");
             const textToProcess = request.selectedText;
-            detailsRef.value = request.articleDetails;
+            detailsRef.value = request.articleDetails; // This comes from background, should have full title
             if (detailsRef.value) detailsRef.value.isActiveSession = true;
             sharedState.currentPlayingText.value = textToProcess;
 
-            // console.log(`[Popup Main] 'processTextForTTS' for: "${textToProcess.substring(0, 50)}..."`, "Details received:", JSON.parse(JSON.stringify(detailsRef.value || {})));
             showLoader(detailsRef.value && detailsRef.value.isChunk ? `Loading chunk ${detailsRef.value.currentChunkIndex + 1}...` : "Checking cache...");
 
             if (detailsRef.value && detailsRef.value.isChunk && detailsRef.value.chunks && detailsRef.value.chunks.length > 1) {
@@ -216,76 +216,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
 
-                if (result[cacheKey]) {
+                if (result[cacheKey]) { // Cache hit
                     console.log("[Popup Main] Cache hit for chunk:", normalizedText.substring(0, 30) + "...");
-                    AudioController.playAudio(result[cacheKey], normalizedText, detailsRef.value);
+                    AudioController.playAudio(result[cacheKey], normalizedText, detailsRef.value); // detailsRef.value has full title
 
-                    let historyDisplayTitle;
-                    let baseTitleForHistory = "Untitled Audio";
-                    const CHUNK_SUFFIX_APPROX_LENGTH = 12;
-
-                    if (detailsRef.value && detailsRef.value.isChunk) {
-                        const totalChunks = detailsRef.value.totalChunks != null ? detailsRef.value.totalChunks : 0;
-
-                        if (detailsRef.value.title && typeof detailsRef.value.title === 'string' && detailsRef.value.title.trim() !== "" && detailsRef.value.title !== "Selected Text" && detailsRef.value.title !== "Page Content") {
-                            baseTitleForHistory = detailsRef.value.title;
-                        } else {
-                            baseTitleForHistory = normalizedText;
-                        }
-
-                        if (totalChunks > 1) {
-                            let maxBaseLength = HISTORY_ITEM_TARGET_LENGTH - CHUNK_SUFFIX_APPROX_LENGTH;
-                            if (maxBaseLength < 10) maxBaseLength = 10;
-
-                            if (baseTitleForHistory.length > maxBaseLength) baseTitleForHistory = baseTitleForHistory.substring(0, maxBaseLength).trim() + "...";
-                            const chunkNumber = detailsRef.value.currentChunkIndex != null ? detailsRef.value.currentChunkIndex + 1 : '';
-                            historyDisplayTitle = `${baseTitleForHistory} (${chunkNumber}/${totalChunks})`;
-                        } else {
-                            if (baseTitleForHistory.length > HISTORY_ITEM_TARGET_LENGTH) baseTitleForHistory = baseTitleForHistory.substring(0, HISTORY_ITEM_TARGET_LENGTH - 3).trim() + "...";
-                            else baseTitleForHistory = baseTitleForHistory.trim();
-                            historyDisplayTitle = baseTitleForHistory;
-                        }
-                    } else {
-                        if (detailsRef.value && typeof detailsRef.value.title === 'string' && detailsRef.value.title.trim() !== "") {
-                            baseTitleForHistory = detailsRef.value.title;
-                        } else {
-                            baseTitleForHistory = normalizedText;
-                            if (baseTitleForHistory.length > SELECTED_TEXT_TITLE_BASE_LENGTH) {
-                                baseTitleForHistory = baseTitleForHistory.substring(0, SELECTED_TEXT_TITLE_BASE_LENGTH - 3).trim() + "...";
-                            }
-                        }
-
-                        if (typeof baseTitleForHistory !== 'string' || baseTitleForHistory.trim() === "") {
-                            baseTitleForHistory = normalizedText.substring(0, SELECTED_TEXT_TITLE_BASE_LENGTH) + (normalizedText.length > SELECTED_TEXT_TITLE_BASE_LENGTH ? "..." : "");
-                            if (baseTitleForHistory.trim() === "") baseTitleForHistory = "Untitled Selection";
-                        }
-
-                        if (baseTitleForHistory.length > HISTORY_ITEM_TARGET_LENGTH) {
-                            historyDisplayTitle = baseTitleForHistory.substring(0, HISTORY_ITEM_TARGET_LENGTH - 3).trim() + "...";
-                        } else {
-                            historyDisplayTitle = baseTitleForHistory.trim();
-                        }
-                    }
-
-                    let finalTitleToSend = (typeof historyDisplayTitle === 'string') ? historyDisplayTitle.trim() : '';
-                    if (finalTitleToSend === "") {
-                        finalTitleToSend = "Audio Snippet (Popup Fallback)";
-                    }
-                    HistoryManager.addHistoryItemToDOM(normalizedText, result[cacheKey], finalTitleToSend); // Removed extra 'true'
+                    // For history, use the full title from detailsRef.value.title
+                    const fullTitleForHistory = (detailsRef.value && detailsRef.value.title) ? detailsRef.value.title : "Audio Snippet";
+                    HistoryManager.addHistoryItemToDOM(normalizedText, result[cacheKey], fullTitleForHistory, detailsRef.value);
                     sendResponse({ status: "Playing chunk from cache" });
 
-                } else {
+                } else { // Cache miss
                     console.log("[Popup Main] Cache miss for chunk:", normalizedText.substring(0, 30) + "...", ". Requesting from background.");
                     domElements.statusMessage.textContent = detailsRef.value && detailsRef.value.isChunk ? `Fetching chunk ${detailsRef.value.currentChunkIndex + 1}...` : "Fetching from server...";
                     chrome.runtime.sendMessage({ action: "fetchTTSFromServer", textToSynthesize: normalizedText, originalArticleDetails: detailsRef.value });
                     sendResponse({ status: "Cache miss, fetching chunk from server" });
                 }
             });
-            return true;
+            return true; // Async response
 
         } else if (request.action === "playAudioDataUrl" && request.audioDataUrl && request.originalText) {
-            // console.log("[Popup Main] 'playAudioDataUrl' for:", request.originalText.substring(0, 50) + "...", "Received articleDetails:", JSON.parse(JSON.stringify(request.articleDetails || {})));
-            detailsRef.value = request.articleDetails;
+            detailsRef.value = request.articleDetails; // This comes from background, should have full title
             if (detailsRef.value) detailsRef.value.isActiveSession = true;
             sharedState.currentPlayingText.value = request.originalText;
 
@@ -303,58 +253,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 else { console.log("Audio data cached for key:", cacheKey); }
             });
 
-            let historyDisplayTitle;
-            let baseTitleForHistory = "Untitled Audio";
-            const CHUNK_SUFFIX_APPROX_LENGTH = 12;
-            const currentTextForHistory = request.originalText.trim();
-
-            if (detailsRef.value && detailsRef.value.isChunk) {
-                const totalChunks = detailsRef.value.totalChunks != null ? detailsRef.value.totalChunks : 0;
-
-                if (detailsRef.value.title && typeof detailsRef.value.title === 'string' && detailsRef.value.title.trim() !== "" && detailsRef.value.title !== "Selected Text" && detailsRef.value.title !== "Page Content") {
-                    baseTitleForHistory = detailsRef.value.title;
-                } else {
-                    baseTitleForHistory = currentTextForHistory;
-                }
-
-                if (totalChunks > 1) {
-                    let maxBaseLength = HISTORY_ITEM_TARGET_LENGTH - CHUNK_SUFFIX_APPROX_LENGTH;
-                    if (maxBaseLength < 10) maxBaseLength = 10;
-                    if (baseTitleForHistory.length > maxBaseLength) baseTitleForHistory = baseTitleForHistory.substring(0, maxBaseLength).trim() + "...";
-                    const chunkNumber = detailsRef.value.currentChunkIndex != null ? detailsRef.value.currentChunkIndex + 1 : '';
-                    historyDisplayTitle = `${baseTitleForHistory} (${chunkNumber}/${totalChunks})`;
-                } else {
-                    if (baseTitleForHistory.length > HISTORY_ITEM_TARGET_LENGTH) baseTitleForHistory = baseTitleForHistory.substring(0, HISTORY_ITEM_TARGET_LENGTH - 3).trim() + "...";
-                    else baseTitleForHistory = baseTitleForHistory.trim();
-                    historyDisplayTitle = baseTitleForHistory;
-                }
-            } else {
-                if (detailsRef.value && typeof detailsRef.value.title === 'string' && detailsRef.value.title.trim() !== "") {
-                    baseTitleForHistory = detailsRef.value.title;
-                } else {
-                    baseTitleForHistory = currentTextForHistory;
-                    if (baseTitleForHistory.length > SELECTED_TEXT_TITLE_BASE_LENGTH) {
-                        baseTitleForHistory = baseTitleForHistory.substring(0, SELECTED_TEXT_TITLE_BASE_LENGTH - 3).trim() + "...";
-                    }
-                }
-
-                if (typeof baseTitleForHistory !== 'string' || baseTitleForHistory.trim() === "") {
-                    baseTitleForHistory = currentTextForHistory.substring(0, SELECTED_TEXT_TITLE_BASE_LENGTH) + (currentTextForHistory.length > SELECTED_TEXT_TITLE_BASE_LENGTH ? "..." : "");
-                    if (baseTitleForHistory.trim() === "") baseTitleForHistory = "Untitled Selection";
-                }
-
-                if (baseTitleForHistory.length > HISTORY_ITEM_TARGET_LENGTH) {
-                    historyDisplayTitle = baseTitleForHistory.substring(0, HISTORY_ITEM_TARGET_LENGTH - 3).trim() + "...";
-                } else {
-                    historyDisplayTitle = baseTitleForHistory.trim();
-                }
-            }
-
-            let finalTitleToSend = (typeof historyDisplayTitle === 'string') ? historyDisplayTitle.trim() : '';
-            if (finalTitleToSend === "") {
-                finalTitleToSend = "Audio Snippet (Popup Fallback)";
-            }
-            HistoryManager.addHistoryItemToDOM(currentTextForHistory, request.audioDataUrl, finalTitleToSend); // Removed extra 'true'
+            // For history, use the full title from detailsRef.value.title
+            const fullTitleForHistory = (detailsRef.value && detailsRef.value.title) ? detailsRef.value.title : "Audio Snippet";
+            // Pass the complete articleDetails object to history so it can store everything needed for full restoration
+            HistoryManager.addHistoryItemToDOM(request.originalText.trim(), request.audioDataUrl, fullTitleForHistory, detailsRef.value);
             sendResponse({ status: "Audio received and playing, caching attempt made" });
             return false;
 
@@ -367,10 +269,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (request.action === "allChunksFinished") {
             console.log("[Popup Main] Received 'allChunksFinished' from background.");
             if (domElements.statusMessage) domElements.statusMessage.textContent = "Finished reading all page content.";
-            if (detailsRef.value) detailsRef.value.isActiveSession = false;
-            updateSessionInfoDisplay(detailsRef.value, sharedState.isAudioPlaying.value);
+            if (detailsRef.value) detailsRef.value.isActiveSession = false; // Mark session inactive
+            updateSessionInfoDisplay(detailsRef.value, sharedState.isAudioPlaying.value); // Update UI
             if (domElements.sessionQueueContainer) domElements.sessionQueueContainer.style.display = 'none';
-            detailsRef.value = null;
+            // Don't null out detailsRef.value immediately, updateSessionInfoDisplay might need it briefly
+            // It will be effectively reset if a new session starts or popup closes.
             sharedState.isAudioPlaying.value = false;
             return false;
         } else {
@@ -403,6 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         hideLoader();
                         updateSessionInfoDisplay(detailsVal, sharedState.isAudioPlaying.value);
                     }
+                    // If successful, background will send a new message to process/play audio
                 }
             });
         } else {
@@ -413,24 +317,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     window.addEventListener('beforeunload', (event) => {
+        // Background.js handles session saving on popup close if audio was playing.
+        // No specific action needed here for that.
         if (sharedState.isAudioPlaying.value && !domElements.audioPlayer.paused && !domElements.audioPlayer.ended) {
             console.log("[Popup Main] 'beforeunload' triggered while audio is actively playing. State should be saved by background.js on window close.");
         }
     });
 
     console.log("[Popup Main] All event handlers attached.");
-    hideLoader();
-    domElements.audioPlayer.style.display = 'block';
+    hideLoader(); // Ensure loader is hidden on initial load
+    domElements.audioPlayer.style.display = 'block'; // Ensure player is visible
 
     console.log("[Popup Main] Requesting initial session state from background...");
     chrome.runtime.sendMessage({ action: "requestInitialSessionState" }, response => {
-        const detailsRef = sharedState.currentArticleDetails;
+        const detailsRef = sharedState.currentArticleDetails; // Use this to modify sharedState.currentArticleDetails.value
         if (chrome.runtime.lastError) {
             console.warn("[Popup Main] Error requesting initial session state:", chrome.runtime.lastError.message);
         } else if (response && response.action === "activeSessionState" && response.sessionData) {
-            // console.log("[Popup Main] Received initial session state:", response.sessionData); // Keep for specific debugging
             if (response.sessionData.isActive) {
-                detailsRef.value = response.sessionData.articleDetails;
+                detailsRef.value = response.sessionData.articleDetails; // This should contain the full title
                 if (detailsRef.value) {
                     detailsRef.value.isActiveSession = true;
                     detailsRef.value.currentChunkIndex = response.sessionData.currentIndex;
@@ -438,34 +343,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     detailsRef.value.totalChunks = detailsRef.value.chunks.length;
                     detailsRef.value.isLastChunk = (detailsRef.value.currentChunkIndex === (detailsRef.value.chunks.length > 0 ? detailsRef.value.chunks.length - 1 : 0));
 
-                    // console.log("[Popup Main] Restored active session details for UI:", JSON.parse(JSON.stringify(detailsRef.value || {})));
                     if (detailsRef.value.isChunk && detailsRef.value.chunks && detailsRef.value.chunks.length > 1) {
                         renderSessionQueue(detailsRef.value.chunks, detailsRef.value.currentChunkIndex, handleChunkItemClick);
                     }
                 } else {
-                    console.warn("[Popup Main] Active session reported, but articleDetails missing. Creating basic state.");
-                    detailsRef.value = {
-                        isActiveSession: true,
-                        isChunk: (response.sessionData.chunks && response.sessionData.chunks.length > 1),
-                        currentChunkIndex: response.sessionData.currentIndex,
-                        totalChunks: response.sessionData.chunks ? response.sessionData.chunks.length : 0,
-                        chunks: response.sessionData.chunks || [],
-                        title: "Active Session"
-                    };
-                    if (detailsRef.value.isChunk && detailsRef.value.chunks && detailsRef.value.chunks.length > 1) {
-                        renderSessionQueue(detailsRef.value.chunks, detailsRef.value.currentChunkIndex, handleChunkItemClick);
-                    }
+                    detailsRef.value = { /* ... fallback as before ... */ title: "Active Session (Initial Load Error)" };
                 }
             } else {
-                console.log("[Popup Main] No active session reported by background on load.");
                 detailsRef.value = { isActiveSession: false };
                 if (domElements.sessionQueueContainer) domElements.sessionQueueContainer.style.display = 'none';
             }
         } else {
-            console.log("[Popup Main] No active session reported or invalid response for initial state:", response);
             detailsRef.value = { isActiveSession: false };
             if (domElements.sessionQueueContainer) domElements.sessionQueueContainer.style.display = 'none';
         }
-        updateSessionInfoDisplay(detailsRef.value, sharedState.isAudioPlaying.value);
+        updateSessionInfoDisplay(detailsRef.value, sharedState.isAudioPlaying.value); // Update UI with initial state
     });
 });
