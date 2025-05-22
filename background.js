@@ -10,8 +10,7 @@ try {
 
 let ttsPopoutWindowId = null;
 const PERSISTED_SESSION_KEY = 'persistedTTSSession';
-// AUDIO_CACHE_PREFIX_BG is now AUDIO_CACHE_PREFIX from cacheUtils.js
-// generateAudioCacheKeyForBg is now generateAudioCacheKey from cacheUtils.js
+const SELECTED_TEXT_TITLE_LENGTH = 60; // Define the length for the title snippet
 
 // In-memory session state
 let currentTTSSession = {
@@ -139,15 +138,17 @@ async function openOrFocusTTSPopout() {
                 ttsPopoutWindowId = null;
             }
         } catch (e) {
+            console.warn("[Service Worker] Error getting existing window, assuming closed:", e.message);
             ttsPopoutWindowId = null;
         }
     }
     try {
         const newWindow = await chrome.windows.create({
-            url: popoutUrl, type: "popup", width: 400, height: 550, focused: true
+            url: popoutUrl, type: "popup", width: 400, height: 600, focused: true
         });
         ttsPopoutWindowId = newWindow.id;
-        console.log("[Service Worker] New TTS popout window created. ID:", ttsPopoutWindowId);
+        console.log("[Service Worker] New TTS popout window created. ID:", ttsPopoutWindowId, "Height: 600");
+
         chrome.windows.onRemoved.addListener(function specificWindowRemovedListener(removedWindowId) {
             if (removedWindowId === ttsPopoutWindowId) {
                 console.log("[Service Worker] TTS popout window (ID:", ttsPopoutWindowId, ") was closed.");
@@ -157,6 +158,7 @@ async function openOrFocusTTSPopout() {
                     saveCurrentSession();
                     console.log("[Service Worker] TTS session marked as paused due to popout close.");
                 }
+                chrome.windows.onRemoved.removeListener(specificWindowRemovedListener);
             }
         });
         return ttsPopoutWindowId;
@@ -205,7 +207,7 @@ async function processAndSendChunkToPopup(chunkIndex) {
     console.log(`[Service Worker] Processing chunk ${chunkIndex + 1}/${currentTTSSession.chunks.length} for popup: "${chunkText.substring(0, 50)}..."`);
 
     const articleDetailsForChunk = {
-        title: currentTTSSession.articleDetails.title || "Reading Page Content",
+        title: currentTTSSession.articleDetails.title || "Reading Page Content", // Use the title from currentTTSSession
         textContent: chunkText,
         isChunk: currentTTSSession.chunks.length > 1,
         currentChunkIndex: chunkIndex,
@@ -240,7 +242,6 @@ async function attemptToPrefetchNextChunk() {
 
     if (nextChunkToPrefetchIndex < currentTTSSession.chunks.length) {
         const textToPrefetch = currentTTSSession.chunks[nextChunkToPrefetchIndex];
-        // Use the shared generateAudioCacheKey function
         const cacheKey = generateAudioCacheKey(textToPrefetch);
 
         const cachedItem = await chrome.storage.local.get([cacheKey]);
@@ -289,10 +290,14 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         await clearPersistedSession();
         resetTTSSession(false);
 
-        const selectedText = info.selectionText;
+        const selectedText = info.selectionText.trim();
+        // MODIFIED: Set title to a snippet of the selected text
+        const titleSnippet = selectedText.substring(0, SELECTED_TEXT_TITLE_LENGTH) +
+            (selectedText.length > SELECTED_TEXT_TITLE_LENGTH ? "..." : "");
+
         currentTTSSession.chunks = [selectedText];
         currentTTSSession.articleDetails = {
-            title: "Selected Text",
+            title: titleSnippet, // Use the generated snippet as the title
             textContent: selectedText,
             simplifiedHtml: `<p>${selectedText.replace(/\n/g, '</p><p>')}</p>`,
             excerpt: selectedText.substring(0, 150) + (selectedText.length > 150 ? "..." : ""),
@@ -306,7 +311,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             if (ttsPopoutWindowId) {
                 await new Promise(resolve => setTimeout(resolve, 700));
                 processAndSendChunkToPopup(currentTTSSession.currentIndex);
-                attemptToPrefetchNextChunk();
+                // attemptToPrefetchNextChunk(); // Not typically needed for single selected text
             } else { resetTTSSession(); }
         } catch (error) { console.error("[SW] Error opening popout from context menu:", error); resetTTSSession(); }
     }
@@ -325,6 +330,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "clearPersistedTTSSession_Background") {
+        (async () => {
+            await clearPersistedSession();
+            resetTTSSession(false);
+            console.log("[Service Worker] Persisted TTS session cleared by popup request.");
+            if (ttsPopoutWindowId) {
+                chrome.runtime.sendMessage({ action: "sessionClearedByBackground" })
+                    .catch(e => console.warn("Error sending sessionClearedByBackground to popup:", e.message));
+            }
+            sendResponse({ status: "persistedSessionCleared" });
+        })();
+        return true;
+    }
+
     if (request.action === "getSimplifiedContentForTTS") {
         (async () => {
             await clearPersistedSession();
@@ -335,10 +354,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     sendResponse({ success: false, error: "No suitable browser window found." }); return;
                 }
                 const [activeTab] = await chrome.tabs.query({ active: true, windowId: lastFocusedNormalWindow.id });
+
                 if (activeTab && activeTab.id) {
                     if (activeTab.url && (activeTab.url.startsWith("chrome://") || activeTab.url.startsWith("https://chrome.google.com/webstore"))) {
                         sendResponse({ success: false, error: "Cannot extract content from restricted pages." }); return;
                     }
+
                     const responseFromContent = await chrome.tabs.sendMessage(activeTab.id, { action: "extractReadablePageContent" });
                     if (responseFromContent && responseFromContent.success && responseFromContent.data && responseFromContent.data.textContentChunks) {
                         currentTTSSession.chunks = responseFromContent.data.textContentChunks;
@@ -346,8 +367,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         if (!currentTTSSession.articleDetails.chunks) {
                             currentTTSSession.articleDetails.chunks = currentTTSSession.chunks;
                         }
+                        // Ensure title is present, fallback if Readability didn't provide one
+                        if (!currentTTSSession.articleDetails.title && currentTTSSession.chunks.length > 0) {
+                            currentTTSSession.articleDetails.title = currentTTSSession.chunks[0].substring(0, SELECTED_TEXT_TITLE_LENGTH) +
+                                (currentTTSSession.chunks[0].length > SELECTED_TEXT_TITLE_LENGTH ? "..." : "");
+                        } else if (!currentTTSSession.articleDetails.title) {
+                            currentTTSSession.articleDetails.title = "Page Content";
+                        }
+
                         currentTTSSession.currentIndex = 0;
                         currentTTSSession.isActive = true;
+
                         await openOrFocusTTSPopout();
                         if (ttsPopoutWindowId) {
                             await new Promise(resolve => setTimeout(resolve, 700));
@@ -355,7 +385,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             attemptToPrefetchNextChunk();
                             sendResponse({ success: true, message: "Chunked content processing initiated." });
                         } else { resetTTSSession(); sendResponse({ success: false, error: "Could not open TTS popout." }); }
-                    } else { sendResponse({ success: false, error: responseFromContent.error || "No valid chunked data." }); }
+                    } else { sendResponse({ success: false, error: responseFromContent.error || "No valid chunked data received from content script." }); }
                 } else { sendResponse({ success: false, error: "No active tab found." }); }
             } catch (error) { console.error("[SW] Error in 'getSimplifiedContentForTTS':", error); sendResponse({ success: false, error: error.message }); }
         })();
@@ -484,6 +514,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 totalChunks: currentTTSSession.chunks ? currentTTSSession.chunks.length : 0
             }
             : null;
+
         const sessionDataForPopup = {
             isActive: currentTTSSession.isActive,
             currentIndex: currentTTSSession.currentIndex,

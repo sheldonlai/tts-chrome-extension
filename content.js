@@ -1,6 +1,6 @@
 // content.js
 
-console.log("[Content Script] Initializing content.js - Version 3 (char limit chunking).");
+console.log("[Content Script] Initializing content.js - Version 4 (link extraction).");
 
 if (typeof Readability === 'undefined') {
     console.error("[Content Script] FATAL: Readability.js is not loaded or defined! Check manifest.json paths and ensure the library file is correct.");
@@ -55,6 +55,7 @@ function extractAndChunkTextContent() {
         return null;
     }
 
+    // It's crucial to clone the document for Readability to avoid altering the live DOM
     const documentClone = document.cloneNode(true);
     let article;
     try {
@@ -95,20 +96,74 @@ function extractAndChunkTextContent() {
         console.log(`[Content Script] Text split into ${finalChunks.length} final chunks.`);
 
         return {
-            title: article.title || "Untitled Page",
+            title: article.title || document.title || "Untitled Page", // Fallback to document.title
             textContentChunks: finalChunks,
-            simplifiedHtml: article.content,
+            simplifiedHtml: article.content, // This is the main readable content HTML
             excerpt: article.excerpt,
-            length: article.length
+            length: article.length,
+            sourceURL: window.location.href // Add current page URL
         };
     } else {
         console.warn("[Content Script] Readability could not parse an article or textContent was empty.");
         if (article) {
             console.log("[Content Script] Article object from Readability:", article);
         }
-        return null;
+        // Fallback to trying to get basic info if Readability fails
+        return {
+            title: document.title || "Untitled Page",
+            textContentChunks: splitTextIntoChunks(document.body.innerText || "", 1500), // Basic fallback
+            simplifiedHtml: null,
+            excerpt: (document.body.innerText || "").substring(0, 150),
+            length: (document.body.innerText || "").length,
+            sourceURL: window.location.href
+        };
     }
 }
+
+/**
+ * Extracts all <a> tags from the current DOM, the current page URL, and the current page title.
+ * @returns {object} An object containing currentUrl, currentTitle, and a list of links.
+ * Each link object in the list has 'href' and 'text' properties.
+ */
+function extractPageLinkData() {
+    console.log("[Content Script] extractPageLinkData() called.");
+    const currentUrl = window.location.href;
+    const currentTitle = document.title || "Untitled Page";
+    const allAnchorTags = document.getElementsByTagName('a');
+    const links = [];
+
+    for (let i = 0; i < allAnchorTags.length; i++) {
+        const anchor = allAnchorTags[i];
+        let href = anchor.getAttribute('href');
+        // Resolve relative URLs to absolute URLs
+        if (href) {
+            try {
+                href = new URL(href, currentUrl).href;
+            } catch (e) {
+                // If it's an invalid URL (e.g., "javascript:void(0)"), keep it as is or skip
+                console.warn(`[Content Script] Invalid href: ${href}`, e);
+                // Optionally skip invalid hrefs: continue;
+            }
+        }
+
+        const text = anchor.innerText.trim();
+        // Only include links that have an href and some text content, or a title attribute
+        if (href && (text || anchor.title)) {
+            links.push({
+                href: href,
+                text: text || anchor.title || href // Fallback to title or href if innerText is empty
+            });
+        }
+    }
+
+    console.log(`[Content Script] Extracted ${links.length} links. Current URL: ${currentUrl}, Title: ${currentTitle}`);
+    return {
+        currentUrl: currentUrl,
+        currentTitle: currentTitle,
+        links: links
+    };
+}
+
 
 try {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -125,7 +180,17 @@ try {
                 console.error("[Content Script] Failed to extract or chunk content. Sending error response to background.");
                 sendResponse({ success: false, error: "Could not extract or chunk readable content from the page using Readability.js." });
             }
-            return true;
+            return true; // Indicates async response potentially if Readability were async (it's not here)
+        } else if (request.action === "extractPageLinks") {
+            console.log("[Content Script] 'extractPageLinks' action received from background.");
+            const linkData = extractPageLinkData();
+            if (linkData) {
+                sendResponse({ success: true, data: linkData });
+            } else {
+                // This case should ideally not happen if the function is implemented correctly
+                sendResponse({ success: false, error: "Failed to extract link data." });
+            }
+            return false; // Synchronous response for this simple extraction
         }
     });
     console.log("[Content Script] Message listener successfully attached.");
