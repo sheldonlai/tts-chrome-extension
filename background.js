@@ -12,23 +12,27 @@ const SELECTED_TEXT_TITLE_LENGTH = 400;
 
 let currentTTSSession = {
     chunks: [],
-    articleDetails: { // Will store title, sourceTabId, sourceUrl, etc.
+    articleDetails: {
         sourceTabId: null,
         sourceUrl: null,
-        // Other properties like title, simplifiedHtml, excerpt will be added dynamically
+        nextPageUrlToVisit: null,
     },
     currentIndex: 0,
-    isActive: false, // Overall session active status
+    isActive: false,
     isPlayingInPopup: false,
-    prefetchedAudioDataUrlForNext: null,
-    isCurrentlyPrefetching: false,
-    autoAdvanceToNextPage: false
+    // prefetchedAudioDataUrlForNext: null, // No longer needed, cache is primary
+    isCurrentlyPrefetching: false, // Tracks if an N+1 prefetch is active
+    autoAdvanceToNextPage: false,
+    isIdentifyingNextPage: false
 };
 
-let pendingTTSForTab = {}; // { tabId: { isPending: true, url: "expectedUrl" } }
+let pendingTTSForTab = {};
 
 async function saveCurrentSession() {
-    if (currentTTSSession.isActive || (currentTTSSession.chunks && currentTTSSession.chunks.length > 0)) {
+    // Only save if there's something meaningful to persist
+    if (currentTTSSession.isActive ||
+        (currentTTSSession.chunks && currentTTSSession.chunks.length > 0) ||
+        (currentTTSSession.articleDetails && currentTTSSession.articleDetails.nextPageUrlToVisit)) {
         try {
             const articleDetailsToSave = { ...currentTTSSession.articleDetails };
             const sessionToSave = {
@@ -36,7 +40,9 @@ async function saveCurrentSession() {
                 articleDetails: articleDetailsToSave,
                 currentIndex: currentTTSSession.currentIndex,
                 isActive: currentTTSSession.isActive,
-                autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage
+                autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage,
+                isIdentifyingNextPage: currentTTSSession.isIdentifyingNextPage
+                // isCurrentlyPrefetching is a transient state, not persisted
             };
             await chrome.storage.local.set({ [PERSISTED_SESSION_KEY]: sessionToSave });
         } catch (e) {
@@ -54,19 +60,20 @@ async function loadPersistedSession() {
 
         if (persistedData) {
             currentTTSSession.chunks = persistedData.chunks || [];
-            currentTTSSession.articleDetails = persistedData.articleDetails || { sourceTabId: null, sourceUrl: null };
+            currentTTSSession.articleDetails = persistedData.articleDetails || { sourceTabId: null, sourceUrl: null, nextPageUrlToVisit: null };
             if (!currentTTSSession.articleDetails.chunks || currentTTSSession.articleDetails.chunks.length === 0) {
                 if (persistedData.chunks) currentTTSSession.articleDetails.chunks = persistedData.chunks;
             }
             currentTTSSession.currentIndex = typeof persistedData.currentIndex === 'number' ? persistedData.currentIndex : 0;
             currentTTSSession.isActive = persistedData.isActive || false;
             currentTTSSession.autoAdvanceToNextPage = persistedData.autoAdvanceToNextPage || false;
+            currentTTSSession.isIdentifyingNextPage = persistedData.isIdentifyingNextPage || false;
 
             currentTTSSession.isPlayingInPopup = false;
             currentTTSSession.isCurrentlyPrefetching = false;
-            currentTTSSession.prefetchedAudioDataUrlForNext = null;
+            // currentTTSSession.prefetchedAudioDataUrlForNext = null; // Reset on load
 
-            console.log("[SW] Loaded persisted session. Active:", currentTTSSession.isActive, "AutoAdvance:", currentTTSSession.autoAdvanceToNextPage, "TabID:", currentTTSSession.articleDetails.sourceTabId);
+            console.log("[SW] Loaded persisted session. Active:", currentTTSSession.isActive, "AutoAdvance:", currentTTSSession.autoAdvanceToNextPage, "IdentifyingNext:", currentTTSSession.isIdentifyingNextPage, "NextURL:", currentTTSSession.articleDetails.nextPageUrlToVisit);
         } else {
             console.log("[SW] No valid session found in storage to load. Initializing default session.");
             resetTTSSession(false);
@@ -181,13 +188,15 @@ function resetTTSSession(clearStorage = true, preserveAutoAdvance = false) {
         articleDetails: {
             sourceTabId: preserveAutoAdvance ? oldSourceTabId : null,
             sourceUrl: preserveAutoAdvance ? oldSourceUrl : null,
+            nextPageUrlToVisit: null,
         },
         currentIndex: 0,
         isActive: false,
         isPlayingInPopup: false,
-        prefetchedAudioDataUrlForNext: null,
+        // prefetchedAudioDataUrlForNext: null, // Removed
         isCurrentlyPrefetching: false,
-        autoAdvanceToNextPage: autoAdvanceState
+        autoAdvanceToNextPage: autoAdvanceState,
+        isIdentifyingNextPage: false
     };
 
     if (clearStorage) {
@@ -206,6 +215,9 @@ async function initiateTTSForPage(tabId, isContinuation = false) {
     if (isContinuation) {
         currentTTSSession.autoAdvanceToNextPage = previousAutoAdvanceState;
     }
+    currentTTSSession.isIdentifyingNextPage = false;
+    if (currentTTSSession.articleDetails) currentTTSSession.articleDetails.nextPageUrlToVisit = null;
+
 
     try {
         if (!tabId) {
@@ -230,10 +242,10 @@ async function initiateTTSForPage(tabId, isContinuation = false) {
         if (responseFromContent && responseFromContent.success && responseFromContent.data && responseFromContent.data.textContentChunks) {
             currentTTSSession.chunks = responseFromContent.data.textContentChunks;
             currentTTSSession.articleDetails = {
-                ...currentTTSSession.articleDetails, // Keeps sourceTabId, sourceUrl
-                ...responseFromContent.data // Adds title, excerpt, simplifiedHtml etc.
+                ...currentTTSSession.articleDetails,
+                ...responseFromContent.data,
+                nextPageUrlToVisit: null
             };
-            // Ensure articleDetails also has a reference to chunks if not already there from responseFromContent.data
             if (!currentTTSSession.articleDetails.chunks) {
                 currentTTSSession.articleDetails.chunks = currentTTSSession.chunks;
             }
@@ -252,7 +264,6 @@ async function initiateTTSForPage(tabId, isContinuation = false) {
             if (ttsPopoutWindowId) {
                 await new Promise(resolve => setTimeout(resolve, 700));
                 processAndSendChunkToPopup(currentTTSSession.currentIndex);
-                attemptToPrefetchNextChunk();
                 saveCurrentSession();
                 return { success: true, message: "Chunked content processing initiated for page." };
             } else {
@@ -272,49 +283,54 @@ async function initiateTTSForPage(tabId, isContinuation = false) {
 
 
 async function processAndSendChunkToPopup(chunkIndex) {
-    if (!currentTTSSession.isActive || !currentTTSSession.chunks || chunkIndex >= currentTTSSession.chunks.length) {
-        if (chunkIndex >= (currentTTSSession.chunks ? currentTTSSession.chunks.length : 0) && currentTTSSession.isActive) {
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "allChunksFinished" }).catch(e => console.warn("Error sending allChunksFinished:", e.message));
+    if (!currentTTSSession.isActive || !currentTTSSession.chunks || chunkIndex < 0) {
+        resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+        return;
+    }
 
-            if (currentTTSSession.autoAdvanceToNextPage && currentTTSSession.articleDetails.sourceTabId) {
-                console.log("[SW] Session ended, auto-advance is ON. Attempting to find next page.");
-                await findAndNavigateToNextPage(currentTTSSession.articleDetails.sourceTabId, currentTTSSession.articleDetails.sourceUrl);
-            } else {
-                console.log("[SW] Session ended. Auto-advance OFF or no source tab. Resetting session.");
-                resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
-            }
-        } else {
-            resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+    if (chunkIndex >= currentTTSSession.chunks.length) {
+        if (ttsPopoutWindowId) {
+            chrome.runtime.sendMessage({ action: "allChunksFinished" })
+                .catch(e => console.warn("Error sending allChunksFinished:", e.message));
         }
+        console.log("[SW] All chunks processed for current page. Waiting for audio to finish.");
         return;
     }
 
     const chunkText = currentTTSSession.chunks[chunkIndex];
-    const isLastChunk = chunkIndex === currentTTSSession.chunks.length - 1;
+    const isLastChunkOfCurrentPage = chunkIndex === currentTTSSession.chunks.length - 1;
     currentTTSSession.currentIndex = chunkIndex;
     currentTTSSession.isPlayingInPopup = true;
 
     if (!currentTTSSession.articleDetails) currentTTSSession.articleDetails = {};
-    // Ensure articleDetails contains the chunks array for reference in the popup
     currentTTSSession.articleDetails.chunks = currentTTSSession.chunks;
     saveCurrentSession();
 
-    // Construct comprehensive details for this specific chunk, including overall session state
+    if (currentTTSSession.autoAdvanceToNextPage &&
+        currentTTSSession.chunks.length > 1 &&
+        chunkIndex === currentTTSSession.chunks.length - 2 &&
+        !currentTTSSession.isIdentifyingNextPage &&
+        currentTTSSession.articleDetails.sourceTabId) {
+        console.log("[SW] Second to last chunk started, auto-advance is ON. Proactively identifying next page URL.");
+        identifyAndStoreNextPageUrl(currentTTSSession.articleDetails.sourceTabId, currentTTSSession.articleDetails.sourceUrl)
+            .catch(e => console.error("[SW] Proactive identifyAndStoreNextPageUrl failed:", e));
+    }
+
     const articleDetailsForChunk = {
-        ...(currentTTSSession.articleDetails), // Base details like title, simplifiedHtml, sourceUrl etc.
-        textContent: chunkText, // Specific text for this chunk
+        ...(currentTTSSession.articleDetails),
+        textContent: chunkText,
         isChunk: currentTTSSession.chunks.length > 1,
         currentChunkIndex: chunkIndex,
         totalChunks: currentTTSSession.chunks.length,
-        isLastChunk: isLastChunk,
-        // isActiveSession: currentTTSSession.isActive, // Let popup derive this or manage its own view state
-        autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage // Pass current auto-advance state
+        isLastChunk: isLastChunkOfCurrentPage,
+        autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage,
+        isActiveSession: currentTTSSession.isActive
     };
 
     chrome.runtime.sendMessage({
         action: "processTextForTTS",
         selectedText: chunkText,
-        articleDetails: articleDetailsForChunk // Send the comprehensive details for this chunk
+        articleDetails: articleDetailsForChunk
     }, response => {
         if (chrome.runtime.lastError) {
             console.warn(`[SW] Error sending 'processTextForTTS' for chunk ${chunkIndex} to popout:`, chrome.runtime.lastError.message);
@@ -322,24 +338,36 @@ async function processAndSendChunkToPopup(chunkIndex) {
             saveCurrentSession();
         }
     });
+
+    attemptToPrefetchNextChunk();
 }
+
 async function attemptToPrefetchNextChunk() {
     if (!currentTTSSession.isActive || currentTTSSession.isCurrentlyPrefetching) {
+        if (!currentTTSSession.isActive) console.log("[SW-Prefetch] Session not active, skipping prefetch.");
+        if (currentTTSSession.isCurrentlyPrefetching) console.log("[SW-Prefetch] Already prefetching another chunk, skipping.");
         return;
     }
+
+    // Target chunk N+1 relative to the current playing chunk N
     const nextChunkToPrefetchIndex = currentTTSSession.currentIndex + 1;
 
     if (nextChunkToPrefetchIndex < currentTTSSession.chunks.length) {
         const textToPrefetch = currentTTSSession.chunks[nextChunkToPrefetchIndex];
         const cacheKey = typeof generateAudioCacheKey === 'function' ? generateAudioCacheKey(textToPrefetch) : AUDIO_CACHE_PREFIX + textToPrefetch.substring(0, 50);
 
-        const cachedItem = await chrome.storage.local.get([cacheKey]);
-        if (cachedItem[cacheKey]) {
-            currentTTSSession.prefetchedAudioDataUrlForNext = cachedItem[cacheKey];
-            return;
+        try {
+            const cachedItem = await chrome.storage.local.get([cacheKey]);
+            if (cachedItem[cacheKey]) {
+                console.log(`[SW] Audio for target prefetch chunk ${nextChunkToPrefetchIndex} (text: "${textToPrefetch.substring(0, 20)}...") already in cache. Prefetch not needed.`);
+                return;
+            }
+        } catch (e) {
+            console.error(`[SW-Prefetch] Error checking cache for chunk ${nextChunkToPrefetchIndex}:`, e);
         }
+
         currentTTSSession.isCurrentlyPrefetching = true;
-        currentTTSSession.prefetchedAudioDataUrlForNext = null;
+        console.log(`[SW] Attempting to prefetch audio for chunk index ${nextChunkToPrefetchIndex} (text: "${textToPrefetch.substring(0, 30)}..."). Current playing: ${currentTTSSession.currentIndex}`);
         try {
             const ttsUrl = 'http://localhost:8080/synthesize';
             const fetchResponse = await fetch(ttsUrl, {
@@ -350,8 +378,14 @@ async function attemptToPrefetchNextChunk() {
             if (fetchResponse.ok) {
                 const audioBlob = await fetchResponse.blob();
                 if (audioBlob && audioBlob.size > 0) {
-                    currentTTSSession.prefetchedAudioDataUrlForNext = await blobToDataURL(audioBlob);
+                    const audioDataUrl = await blobToDataURL(audioBlob);
+                    await chrome.storage.local.set({ [cacheKey]: audioDataUrl });
+                    console.log(`[SW] Successfully prefetched and cached audio for chunk index ${nextChunkToPrefetchIndex}.`);
+                } else {
+                    console.warn(`[SW] Prefetch for chunk ${nextChunkToPrefetchIndex} resulted in empty blob.`);
                 }
+            } else {
+                console.warn(`[SW] Prefetch API call for chunk ${nextChunkToPrefetchIndex} failed: ${fetchResponse.status}`);
             }
         } catch (error) {
             console.error(`[SW] Error during prefetch for chunk index ${nextChunkToPrefetchIndex}:`, error);
@@ -359,31 +393,37 @@ async function attemptToPrefetchNextChunk() {
             currentTTSSession.isCurrentlyPrefetching = false;
         }
     } else {
-        currentTTSSession.prefetchedAudioDataUrlForNext = null;
+        console.log(`[SW-Prefetch] No chunk at index ${nextChunkToPrefetchIndex} to prefetch (Current: ${currentTTSSession.currentIndex}, Total: ${currentTTSSession.chunks.length}).`);
     }
 }
 
-async function findAndNavigateToNextPage(sourceTabId, currentSourceUrl) {
-    if (!sourceTabId) {
-        console.warn("[SW] findAndNavigateToNextPage called without sourceTabId.");
-        if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: "Original tab information lost." });
-        return;
+async function identifyAndStoreNextPageUrl(sourceTabId, currentSourceUrl) {
+    if (currentTTSSession.isIdentifyingNextPage) {
+        console.log("[SW] Already in the process of identifying the next page URL. Aborting duplicate call.");
+        return false;
     }
-    console.log(`[SW] Finding next page for tab ${sourceTabId} (current URL: ${currentSourceUrl})`);
+    if (!sourceTabId) {
+        console.warn("[SW] identifyAndStoreNextPageUrl called without sourceTabId.");
+        return false;
+    }
+
+    currentTTSSession.isIdentifyingNextPage = true;
+    if (currentTTSSession.articleDetails) currentTTSSession.articleDetails.nextPageUrlToVisit = null;
+    saveCurrentSession();
+    console.log(`[SW] Identifying next page URL for tab ${sourceTabId} (current URL: ${currentSourceUrl})`);
+    let nextPageDataForFinally;
+
     try {
         const tab = await chrome.tabs.get(sourceTabId);
         if (!tab || tab.url !== currentSourceUrl) {
-            console.warn(`[SW] Tab ${sourceTabId} URL changed or tab closed. Current: ${tab ? tab.url : 'N/A'}. Expected: ${currentSourceUrl}. Aborting next page.`);
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: "Original page context changed." });
-            resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
-            return;
+            console.warn(`[SW] Tab ${sourceTabId} URL changed or tab closed. Current: ${tab ? tab.url : 'N/A'}. Expected: ${currentSourceUrl}. Aborting next page identification.`);
+            return false;
         }
 
         const linksResponse = await chrome.tabs.sendMessage(sourceTabId, { action: "extractPageLinks" });
         if (!linksResponse || !linksResponse.success || !linksResponse.data) {
             console.error("[SW] Failed to extract page links from content script:", linksResponse ? linksResponse.error : "No response");
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: (linksResponse && linksResponse.error) || "Could not extract links." });
-            return;
+            return false;
         }
 
         const nextPageApiUrl = 'http://localhost:8080/get-next-page-data';
@@ -396,38 +436,30 @@ async function findAndNavigateToNextPage(sourceTabId, currentSourceUrl) {
         if (!apiFetchResponse.ok) {
             const errorText = await apiFetchResponse.text();
             console.error(`[SW] Next page API error: ${apiFetchResponse.status} - ${errorText}`);
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: `API Error: ${apiFetchResponse.status}` });
-            return;
+            return false;
         }
 
         const nextPageData = await apiFetchResponse.json();
-        console.log("[SW] Received from next page API:", nextPageData);
+        nextPageDataForFinally = nextPageData;
+        console.log("[SW] Received from next page API for identification:", nextPageData);
 
         if (nextPageData.nextLinkFound && nextPageData.nextLinkUrl) {
-            console.log(`[SW] Next page found: ${nextPageData.nextLinkUrl}. Navigating tab ${sourceTabId}.`);
-            pendingTTSForTab[sourceTabId] = { isPending: true, url: nextPageData.nextLinkUrl };
-
             if (currentTTSSession.articleDetails) {
-                currentTTSSession.articleDetails.sourceUrl = nextPageData.nextLinkUrl;
-                currentTTSSession.articleDetails.title = `Navigating to: ${nextPageData.nextLinkText || "Next Page"}`;
+                currentTTSSession.articleDetails.nextPageUrlToVisit = nextPageData.nextLinkUrl;
+                console.log(`[SW] Next page URL identified and stored: ${nextPageData.nextLinkUrl}`);
+                saveCurrentSession();
+                return true;
             }
-            currentTTSSession.chunks = [];
-            currentTTSSession.currentIndex = 0;
-            currentTTSSession.isActive = true;
-            saveCurrentSession();
-
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: true, navigating: true, url: nextPageData.nextLinkUrl, message: `Navigating to: ${nextPageData.nextLinkText || nextPageData.nextLinkUrl}` });
-            await chrome.tabs.update(sourceTabId, { url: nextPageData.nextLinkUrl });
         } else {
-            console.log("[SW] No next page link found by API. Reasoning:", nextPageData.reasoning);
-            if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: nextPageData.reasoning || "No next page identified." });
-            resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+            console.log("[SW] No next page link identified by API. Reasoning:", nextPageData.reasoning);
         }
     } catch (error) {
-        console.error("[SW] Error in findAndNavigateToNextPage:", error);
-        if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: `Error: ${error.message}` });
-        resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+        console.error("[SW] Error in identifyAndStoreNextPageUrl:", error);
+    } finally {
+        currentTTSSession.isIdentifyingNextPage = false;
+        saveCurrentSession();
     }
+    return false;
 }
 
 
@@ -439,32 +471,35 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         await clearPersistedSession();
         resetTTSSession(false, true);
         currentTTSSession.autoAdvanceToNextPage = previousAutoAdvance;
+        currentTTSSession.isIdentifyingNextPage = false;
+        if (currentTTSSession.articleDetails) currentTTSSession.articleDetails.nextPageUrlToVisit = null;
+
 
         const selectedText = info.selectionText.trim();
         const titleSnippet = selectedText.substring(0, SELECTED_TEXT_TITLE_LENGTH) +
             (selectedText.length > SELECTED_TEXT_TITLE_LENGTH ? "..." : "");
 
         currentTTSSession.chunks = [selectedText];
-        currentTTSSession.articleDetails = { // Reset and repopulate articleDetails
+        currentTTSSession.articleDetails = {
+            ...currentTTSSession.articleDetails,
             title: titleSnippet,
-            textContent: selectedText, // For single chunk, textContent is the chunk itself
+            textContent: selectedText,
             simplifiedHtml: `<p>${selectedText.replace(/\n/g, '</p><p>')}</p>`,
             excerpt: selectedText.substring(0, 150) + (selectedText.length > 150 ? "..." : ""),
             length: selectedText.length,
-            chunks: [selectedText], // Explicitly set chunks here too
+            chunks: [selectedText],
             sourceTabId: tab.id,
-            sourceUrl: tab.url
-            // autoAdvanceToNextPage will be set from currentTTSSession shortly
+            sourceUrl: tab.url,
+            nextPageUrlToVisit: null
         };
         currentTTSSession.currentIndex = 0;
         currentTTSSession.isActive = true;
-        // autoAdvanceToNextPage is already preserved in currentTTSSession
 
         try {
             await openOrFocusTTSPopout();
             if (ttsPopoutWindowId) {
                 await new Promise(resolve => setTimeout(resolve, 700));
-                processAndSendChunkToPopup(currentTTSSession.currentIndex); // This will use the updated currentTTSSession
+                processAndSendChunkToPopup(currentTTSSession.currentIndex);
                 saveCurrentSession();
             } else { resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage); }
         } catch (error) { console.error("[SW] Error opening popout from context menu:", error); resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage); }
@@ -488,7 +523,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // --- Message Listeners from Popup/Content ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    // console.log("[SW] Message received. Action:", request.action);
+    // console.log("[SW] Message received. Action:", request.action, "Request data:", request);
 
     if (request.action === "openTTSWindow") {
         (async () => {
@@ -538,7 +573,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "fetchTTSFromServer" && request.textToSynthesize) {
         const textToSynth = request.textToSynthesize;
-        const requestedChunkIndex = currentTTSSession.isActive && currentTTSSession.chunks ? currentTTSSession.chunks.indexOf(textToSynth) : -1;
+        const finalRequestedChunkIndex = (request.originalArticleDetails && typeof request.originalArticleDetails.currentChunkIndex === 'number') ?
+            request.originalArticleDetails.currentChunkIndex :
+            currentTTSSession.chunks.indexOf(textToSynth);
+
         (async () => {
             try {
                 const ttsUrl = 'http://localhost:8080/synthesize';
@@ -560,20 +598,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     sendResponse({ success: false, error: blobError }); return;
                 }
                 const audioDataUrl = await blobToDataURL(audioBlob);
-                const isLastChunkForThisAudio = currentTTSSession.isActive ? (requestedChunkIndex === currentTTSSession.chunks.length - 1) : true;
 
-                // Use the originalArticleDetails passed from the popup if available, otherwise construct from currentTTSSession
+                const isLastChunkForThisAudio = currentTTSSession.isActive && finalRequestedChunkIndex !== -1 ?
+                    (finalRequestedChunkIndex === currentTTSSession.chunks.length - 1) : true;
+
                 const baseDetails = request.originalArticleDetails || currentTTSSession.articleDetails || {};
                 const articleDetailsForThisChunk = {
                     ...baseDetails,
                     title: baseDetails.title || "Reading Page Content",
                     textContent: textToSynth,
                     isChunk: (request.originalArticleDetails && request.originalArticleDetails.isChunk !== undefined) ? request.originalArticleDetails.isChunk : (currentTTSSession.isActive && currentTTSSession.chunks.length > 1),
-                    currentChunkIndex: requestedChunkIndex !== -1 ? requestedChunkIndex : (currentTTSSession.isActive ? currentTTSSession.currentIndex : 0),
+                    currentChunkIndex: finalRequestedChunkIndex,
                     totalChunks: (request.originalArticleDetails && request.originalArticleDetails.chunks) ? request.originalArticleDetails.chunks.length : (currentTTSSession.isActive ? currentTTSSession.chunks.length : 1),
                     isLastChunk: isLastChunkForThisAudio,
                     chunks: (request.originalArticleDetails && request.originalArticleDetails.chunks) ? request.originalArticleDetails.chunks : (currentTTSSession.isActive ? currentTTSSession.chunks : [textToSynth]),
-                    autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage // Always use current session's autoAdvance
+                    autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage,
+                    isActiveSession: currentTTSSession.isActive
                 };
 
                 if (ttsPopoutWindowId) {
@@ -585,9 +625,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     }).catch(e => { });
                 }
                 sendResponse({ success: true, message: "DataURL sent for playback." });
-                if (currentTTSSession.isActive && requestedChunkIndex !== -1 && requestedChunkIndex === currentTTSSession.currentIndex) {
-                    attemptToPrefetchNextChunk();
-                }
             } catch (error) {
                 console.error("[SW] Error during 'fetchTTSFromServer':", error);
                 if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: `Server fetch error: ${error.message}` }).catch(e => { });
@@ -600,59 +637,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "requestNextAudioChunk") {
         if (currentTTSSession.isActive) {
             const nextIndexToPlay = currentTTSSession.currentIndex + 1;
-            if (nextIndexToPlay < currentTTSSession.chunks.length) {
-                currentTTSSession.currentIndex = nextIndexToPlay;
-                currentTTSSession.isPlayingInPopup = true;
-                if (currentTTSSession.prefetchedAudioDataUrlForNext && currentTTSSession.chunks[currentTTSSession.currentIndex]) {
-                    const textOfPrefetchedChunk = currentTTSSession.chunks[currentTTSSession.currentIndex];
-                    const isLastChunkForPrefetched = currentTTSSession.currentIndex === currentTTSSession.chunks.length - 1;
-                    const articleDetailsForPrefetchedChunk = {
-                        ...(currentTTSSession.articleDetails || {}),
-                        title: (currentTTSSession.articleDetails && currentTTSSession.articleDetails.title) || "Reading Page Content",
-                        textContent: textOfPrefetchedChunk,
-                        isChunk: true,
-                        currentChunkIndex: currentTTSSession.currentIndex,
-                        totalChunks: currentTTSSession.chunks.length,
-                        isLastChunk: isLastChunkForPrefetched,
-                        chunks: currentTTSSession.chunks,
-                        autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage
-                    };
-                    if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "playAudioDataUrl", audioDataUrl: currentTTSSession.prefetchedAudioDataUrlForNext, originalText: textOfPrefetchedChunk, articleDetails: articleDetailsForPrefetchedChunk }).catch(e => { });
-                    currentTTSSession.prefetchedAudioDataUrlForNext = null;
-                    sendResponse({ status: "sentPrefetchedAudio", nextIndex: currentTTSSession.currentIndex });
-                    attemptToPrefetchNextChunk();
-                } else {
-                    processAndSendChunkToPopup(currentTTSSession.currentIndex);
-                    sendResponse({ status: "processingNextChunk", nextIndex: currentTTSSession.currentIndex });
-                }
-            } else {
-                // All chunks finished, logic moved to processAndSendChunkToPopup
-            }
+            processAndSendChunkToPopup(nextIndexToPlay);
+            sendResponse({ status: "processingNextChunkOrFinished", nextIndex: nextIndexToPlay });
         } else {
             sendResponse({ status: "noActiveSession" });
         }
         return true;
     }
 
+
     if (request.action === "requestInitialSessionState") {
-        // Construct a comprehensive articleDetails for the popup
         const comprehensiveArticleDetailsForPopup = {
             ...(currentTTSSession.articleDetails || {}),
             title: (currentTTSSession.articleDetails && currentTTSSession.articleDetails.title) ? currentTTSSession.articleDetails.title : (currentTTSSession.chunks && currentTTSSession.chunks.length > 0 ? "Reading Content" : "No Active Content"),
             isChunk: currentTTSSession.chunks && currentTTSSession.chunks.length > 1,
-            currentChunkIndex: currentTTSSession.currentIndex, // This is on currentTTSSession directly
+            currentChunkIndex: currentTTSSession.currentIndex,
             totalChunks: currentTTSSession.chunks ? currentTTSSession.chunks.length : 0,
             chunks: currentTTSSession.chunks || [],
-            isActiveSession: currentTTSSession.isActive, // This is the overall session active status
+            isActiveSession: currentTTSSession.isActive,
             autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage,
-            // Add textContent for the current chunk if active
             textContent: (currentTTSSession.isActive && currentTTSSession.chunks && currentTTSSession.chunks.length > currentTTSSession.currentIndex) ? currentTTSSession.chunks[currentTTSSession.currentIndex] : ""
         };
 
         const sessionDataForPopup = {
             isActive: currentTTSSession.isActive,
-            currentIndex: currentTTSSession.currentIndex, // Redundant if in comprehensiveArticleDetailsForPopup.currentChunkIndex
-            chunks: currentTTSSession.chunks, // Redundant if in comprehensiveArticleDetailsForPopup.chunks
             articleDetails: comprehensiveArticleDetailsForPopup,
         };
         sendResponse({ action: "activeSessionState", sessionData: sessionDataForPopup });
@@ -663,12 +671,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "resumeTTSSession" && typeof request.resumeFromChunkIndex === 'number') {
         if (currentTTSSession.chunks && currentTTSSession.chunks.length > 0 && request.resumeFromChunkIndex < currentTTSSession.chunks.length) {
             currentTTSSession.isActive = true;
-            currentTTSSession.currentIndex = request.resumeFromChunkIndex;
+            currentTTSSession.isIdentifyingNextPage = false;
+            if (currentTTSSession.articleDetails) currentTTSSession.articleDetails.nextPageUrlToVisit = null;
+
             (async () => {
                 await openOrFocusTTSPopout();
                 if (ttsPopoutWindowId) {
                     await new Promise(resolve => setTimeout(resolve, 300));
-                    processAndSendChunkToPopup(currentTTSSession.currentIndex);
+                    processAndSendChunkToPopup(request.resumeFromChunkIndex);
                     sendResponse({ success: true, message: "Resuming session." });
                 } else {
                     resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
@@ -685,16 +695,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "jumpToChunk" && typeof request.jumpToChunkIndex === 'number') {
         const jumpToIndex = request.jumpToChunkIndex;
         if (currentTTSSession.isActive && currentTTSSession.chunks && jumpToIndex >= 0 && jumpToIndex < currentTTSSession.chunks.length) {
-            currentTTSSession.currentIndex = jumpToIndex;
             currentTTSSession.isPlayingInPopup = true;
-            currentTTSSession.prefetchedAudioDataUrlForNext = null;
             currentTTSSession.isCurrentlyPrefetching = false;
+            currentTTSSession.isIdentifyingNextPage = false;
+            if (currentTTSSession.articleDetails) currentTTSSession.articleDetails.nextPageUrlToVisit = null;
+
             (async () => {
                 await openOrFocusTTSPopout();
                 if (ttsPopoutWindowId) {
                     await new Promise(resolve => setTimeout(resolve, 100));
-                    processAndSendChunkToPopup(currentTTSSession.currentIndex);
-                    attemptToPrefetchNextChunk();
+                    processAndSendChunkToPopup(jumpToIndex);
                     sendResponse({ success: true, message: `Jumping to chunk ${jumpToIndex + 1}` });
                 } else {
                     resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
@@ -708,13 +718,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "toggleAutoAdvance") {
+        const oldAutoAdvanceState = currentTTSSession.autoAdvanceToNextPage;
         currentTTSSession.autoAdvanceToNextPage = request.enable;
         saveCurrentSession();
         console.log("[SW] Auto-advance toggled to:", currentTTSSession.autoAdvanceToNextPage);
         sendResponse({ success: true, autoAdvanceEnabled: currentTTSSession.autoAdvanceToNextPage });
 
+        if (currentTTSSession.autoAdvanceToNextPage && !oldAutoAdvanceState &&
+            currentTTSSession.isActive &&
+            currentTTSSession.chunks.length > 1 &&
+            currentTTSSession.currentIndex === currentTTSSession.chunks.length - 2 &&
+            !currentTTSSession.isIdentifyingNextPage &&
+            currentTTSSession.articleDetails.sourceTabId) {
+
+            console.log("[SW] Auto-advance just enabled on second-to-last chunk. Proactively identifying next page URL.");
+            identifyAndStoreNextPageUrl(currentTTSSession.articleDetails.sourceTabId, currentTTSSession.articleDetails.sourceUrl)
+                .catch(e => console.error("[SW] Proactive identifyAndStoreNextPageUrl (on toggle) failed:", e));
+        }
+
         if (ttsPopoutWindowId) {
-            // Construct a comprehensive articleDetails object for the popup
             const comprehensiveArticleDetailsForToggle = {
                 ...(currentTTSSession.articleDetails || {}),
                 title: (currentTTSSession.articleDetails && currentTTSSession.articleDetails.title) ? currentTTSSession.articleDetails.title : (currentTTSSession.chunks && currentTTSSession.chunks.length > 0 ? "Reading Content" : "No Active Content"),
@@ -722,14 +744,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 currentChunkIndex: currentTTSSession.currentIndex,
                 totalChunks: currentTTSSession.chunks ? currentTTSSession.chunks.length : 0,
                 chunks: currentTTSSession.chunks || [],
-                isActiveSession: currentTTSSession.isActive, // CRITICAL: Include current session's active status
-                autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage, // The new state
-                sourceTabId: currentTTSSession.articleDetails ? currentTTSSession.articleDetails.sourceTabId : null,
-                sourceUrl: currentTTSSession.articleDetails ? currentTTSSession.articleDetails.sourceUrl : null,
-                simplifiedHtml: currentTTSSession.articleDetails ? currentTTSSession.articleDetails.simplifiedHtml : null,
-                excerpt: currentTTSSession.articleDetails ? currentTTSSession.articleDetails.excerpt : null,
-                length: currentTTSSession.articleDetails ? currentTTSSession.articleDetails.length : 0,
-                textContent: (currentTTSSession.chunks && currentTTSSession.chunks.length > currentTTSSession.currentIndex) ? currentTTSSession.chunks[currentTTSSession.currentIndex] : ""
+                isActiveSession: currentTTSSession.isActive,
+                autoAdvanceToNextPage: currentTTSSession.autoAdvanceToNextPage,
+                textContent: (currentTTSSession.isActive && currentTTSSession.chunks && currentTTSSession.chunks.length > currentTTSSession.currentIndex) ? currentTTSSession.chunks[currentTTSSession.currentIndex] : ""
             };
 
             chrome.runtime.sendMessage({
@@ -744,11 +761,49 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "sessionFinishedCheckAutoAdvance") {
         (async () => {
-            console.log("[SW] Received sessionFinishedCheckAutoAdvance. Current autoAdvance state:", currentTTSSession.autoAdvanceToNextPage);
+            console.log("[SW] Received sessionFinishedCheckAutoAdvance. AutoAdvance:", currentTTSSession.autoAdvanceToNextPage, "IdentifyingNext:", currentTTSSession.isIdentifyingNextPage, "StoredNextURL:", (currentTTSSession.articleDetails ? currentTTSSession.articleDetails.nextPageUrlToVisit : 'N/A'));
+
             if (currentTTSSession.autoAdvanceToNextPage && currentTTSSession.articleDetails && currentTTSSession.articleDetails.sourceTabId) {
-                console.log("[SW] Auto-advance is ON. Attempting to find next page for tab:", currentTTSSession.articleDetails.sourceTabId);
-                await findAndNavigateToNextPage(currentTTSSession.articleDetails.sourceTabId, currentTTSSession.articleDetails.sourceUrl);
-                sendResponse({ status: "Auto-advance triggered" });
+                let identifiedUrl = currentTTSSession.articleDetails.nextPageUrlToVisit;
+                if (!identifiedUrl && !currentTTSSession.isIdentifyingNextPage) {
+                    console.log("[SW] Next page URL not yet identified. Attempting to identify now.");
+                    await identifyAndStoreNextPageUrl(currentTTSSession.articleDetails.sourceTabId, currentTTSSession.articleDetails.sourceUrl);
+                    identifiedUrl = currentTTSSession.articleDetails.nextPageUrlToVisit;
+                }
+
+                if (identifiedUrl) {
+                    console.log(`[SW] Navigating to stored/identified next page URL: ${identifiedUrl}`);
+                    pendingTTSForTab[currentTTSSession.articleDetails.sourceTabId] = { isPending: true, url: identifiedUrl };
+
+                    const sourceTabIdForNav = currentTTSSession.articleDetails.sourceTabId;
+
+                    if (currentTTSSession.articleDetails) {
+                        currentTTSSession.articleDetails.sourceUrl = identifiedUrl;
+                        currentTTSSession.articleDetails.title = `Navigating to next page...`;
+                        currentTTSSession.articleDetails.nextPageUrlToVisit = null;
+                    }
+                    currentTTSSession.chunks = [];
+                    currentTTSSession.currentIndex = 0;
+                    currentTTSSession.isActive = true;
+                    currentTTSSession.isIdentifyingNextPage = false;
+
+                    if (ttsPopoutWindowId) {
+                        chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: true, navigating: true, url: identifiedUrl, message: `Navigating to next page...` })
+                            .catch(e => console.warn("Error sending nextPageResult_Popup:", e.message));
+                    }
+                    saveCurrentSession();
+                    await chrome.tabs.update(sourceTabIdForNav, { url: identifiedUrl });
+                    sendResponse({ status: "Navigation to next page initiated" });
+
+                } else if (currentTTSSession.isIdentifyingNextPage) {
+                    console.log("[SW] Still identifying next page. Navigation will occur if successful.");
+                    sendResponse({ status: "Identification in progress, will navigate if successful" });
+                } else {
+                    console.log("[SW] No next page URL could be identified. Auto-advance sequence ends.");
+                    if (ttsPopoutWindowId) chrome.runtime.sendMessage({ action: "nextPageResult_Popup", success: false, navigating: false, reasoning: "Could not identify a next page." });
+                    resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+                    sendResponse({ status: "No next page identified, session ended" });
+                }
             } else {
                 console.log("[SW] Auto-advance is OFF or no source tab. Session truly ended.");
                 resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
@@ -766,18 +821,54 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         console.log(`[SW] Tab ${tabId} updated to ${tab.url} and matches pending TTS. Initiating read (continuation).`);
         const ttsPendingState = { ...pendingTTSForTab[tabId] };
         delete pendingTTSForTab[tabId];
+        currentTTSSession.isIdentifyingNextPage = false;
 
         if (ttsPendingState.isPending) {
+            const autoAdvanceForNewPage = currentTTSSession.autoAdvanceToNextPage;
             const result = await initiateTTSForPage(tabId, true);
-            if (!result.success && ttsPopoutWindowId) {
+
+            if (result.success) {
+                currentTTSSession.autoAdvanceToNextPage = autoAdvanceForNewPage;
+                saveCurrentSession();
+            } else if (ttsPopoutWindowId) {
                 chrome.runtime.sendMessage({ action: "ttsErrorPopup", error: result.error || "Failed to read next page." })
                     .catch(e => console.warn("Error sending ttsErrorPopup for next page read failure:", e.message));
             }
         }
     } else if (pendingTTSForTab[tabId] && changeInfo.status === 'complete' && tab.url !== pendingTTSForTab[tabId].url) {
-        console.warn(`[SW] Tab ${tabId} completed loading but URL ${tab.url} does not match pending TTS URL ${pendingTTSForTab[tabId].url}. Clearing flag.`);
+        console.warn(`[SW] Tab ${tabId} completed loading but URL ${tab.url} does not match pending TTS URL ${pendingTTSForTab[tabId].url}. Clearing pending flag.`);
         delete pendingTTSForTab[tabId];
+        currentTTSSession.isIdentifyingNextPage = false;
+        resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+        saveCurrentSession();
+    } else if (changeInfo.status === 'loading' && pendingTTSForTab[tabId] && tabId === currentTTSSession.articleDetails?.sourceTabId) {
+        if (tab.url !== pendingTTSForTab[tabId].url) {
+            console.warn(`[SW] Monitored tab ${tabId} started loading a different URL (${tab.url}) than expected (${pendingTTSForTab[tabId].url}). Clearing pending TTS.`);
+            delete pendingTTSForTab[tabId];
+            currentTTSSession.isIdentifyingNextPage = false;
+            resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+            saveCurrentSession();
+        }
     }
 });
+
+
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    if (pendingTTSForTab[tabId]) {
+        console.log(`[SW] Tab ${tabId} with pending TTS was removed. Clearing pending flag.`);
+        delete pendingTTSForTab[tabId];
+    }
+    if (currentTTSSession.articleDetails && currentTTSSession.articleDetails.sourceTabId === tabId) {
+        console.log(`[SW] Active TTS source tab ${tabId} was removed. Resetting session.`);
+        resetTTSSession(true, currentTTSSession.autoAdvanceToNextPage);
+        if (ttsPopoutWindowId) {
+            chrome.runtime.sendMessage({ action: "stopAndResetAudio", reason: "Source tab closed." })
+                .catch(e => console.warn("Error sending stopAndResetAudio to popup on tab removal:", e.message));
+        }
+    }
+    currentTTSSession.isIdentifyingNextPage = false;
+    saveCurrentSession();
+});
+
 
 console.log("[SW] Event listeners registered. Initial AutoAdvance:", currentTTSSession.autoAdvanceToNextPage);
