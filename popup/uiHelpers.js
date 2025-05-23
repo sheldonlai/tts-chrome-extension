@@ -9,6 +9,7 @@ function getUIElements() {
         currentSessionTitleSpan: document.getElementById('currentSessionTitle'),
         currentSessionChunkInfoSpan: document.getElementById('currentSessionChunkInfo'),
         resumeButton: document.getElementById('resumeButton'),
+        autoAdvanceToggleBtn: document.getElementById('autoAdvanceToggleBtn'),
 
         sessionQueueContainer: document.getElementById('sessionQueueContainer'),
         sessionQueueList: document.getElementById('sessionQueueList'),
@@ -19,7 +20,7 @@ function getUIElements() {
         toggleHistoryListBtn: document.getElementById('toggleHistoryList'),
         clearHistoryBtn: document.getElementById('clearHistoryBtn'),
 
-        playerAreaWrapper: document.getElementById('playerAreaWrapper') // Corrected ID
+        playerAreaWrapper: document.getElementById('playerAreaWrapper')
     };
 }
 
@@ -29,11 +30,9 @@ window.updateClearHistoryButtonVisibility = function () {
         console.warn("[uiHelpers] Clear All Data button not found during visibility check.");
         return;
     }
-    // console.log("[uiHelpers] updateClearHistoryButtonVisibility called (button is always visible).");
 }
 
 function setupCollapsibleLists() {
-    // console.log("[uiHelpers] setupCollapsibleLists invoked.");
     const ui = getUIElements();
 
     function toggleList(listElement, headerElement, storageKey) {
@@ -41,13 +40,9 @@ function setupCollapsibleLists() {
             console.warn("[uiHelpers] toggleList: Missing listElement or headerElement for:", headerElement ? headerElement.id : 'Unknown header');
             return;
         }
-
         const isNowCollapsed = listElement.classList.toggle('collapsed');
-        // console.log(`[uiHelpers] Toggling list for ${headerElement.id}. Is NOW collapsed: ${isNowCollapsed}.`);
-
         headerElement.classList.toggle('collapsed-header', isNowCollapsed);
         headerElement.classList.toggle('expanded-header', !isNowCollapsed);
-
         if (storageKey) {
             chrome.storage.local.set({ [storageKey]: isNowCollapsed }, () => {
                 if (chrome.runtime.lastError) {
@@ -59,7 +54,6 @@ function setupCollapsibleLists() {
 
     if (ui.toggleSessionQueueBtn && ui.sessionQueueList) {
         ui.toggleSessionQueueBtn.addEventListener('click', () => {
-            // console.log("[uiHelpers] toggleSessionQueueBtn CLICKED.");
             toggleList(ui.sessionQueueList, ui.toggleSessionQueueBtn);
         });
         if (ui.sessionQueueContainer && ui.sessionQueueContainer.style.display !== 'none') {
@@ -71,7 +65,6 @@ function setupCollapsibleLists() {
             ui.toggleSessionQueueBtn.classList.remove('expanded-header');
             ui.sessionQueueList.classList.add('collapsed');
         }
-        // console.log("[uiHelpers] Session queue toggle listener ATTACHED.");
     } else {
         console.warn("[uiHelpers] Session queue toggle button or list not found during setup.");
     }
@@ -83,8 +76,6 @@ function setupCollapsibleLists() {
                 console.error(`[uiHelpers] Error getting collapse state for ${historyCollapsedKey}:`, chrome.runtime.lastError.message);
             }
             const shouldBeCollapsed = result[historyCollapsedKey] !== undefined ? result[historyCollapsedKey] : true;
-            // console.log(`[uiHelpers] Initial history collapsed state from storage for ${historyCollapsedKey}: ${shouldBeCollapsed}`);
-
             if (shouldBeCollapsed) {
                 ui.historyListElement.classList.add('collapsed');
                 ui.toggleHistoryListBtn.classList.add('collapsed-header');
@@ -96,98 +87,90 @@ function setupCollapsibleLists() {
             }
             window.updateClearHistoryButtonVisibility();
         });
-
         if (ui.toggleHistoryListBtn instanceof HTMLElement) {
             ui.toggleHistoryListBtn.addEventListener('click', () => {
-                // console.log("[uiHelpers] toggleHistoryListBtn CLICKED.");
                 toggleList(ui.historyListElement, ui.toggleHistoryListBtn, historyCollapsedKey);
             });
-            // console.log("[uiHelpers] History list toggle listener ATTACHED.");
         } else {
             console.error("[uiHelpers] toggleHistoryListBtn is not a valid HTMLElement.");
         }
     } else {
         console.warn("[uiHelpers] History list toggle button or list not found during setup.");
     }
-    // console.log("[uiHelpers] Collapsible lists setup completed.");
 }
 
 
 function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
     const ui = getUIElements();
-    if (!ui.currentSessionInfoDiv || !ui.currentSessionTitleSpan || !ui.currentSessionChunkInfoSpan || !ui.resumeButton || !ui.statusMessage || !ui.audioPlayer || !ui.sessionQueueContainer) {
+    if (!ui.currentSessionInfoDiv || !ui.currentSessionTitleSpan || !ui.currentSessionChunkInfoSpan ||
+        !ui.resumeButton || /*!ui.goToNextPageBtn ||*/ !ui.autoAdvanceToggleBtn || // goToNextPageBtn removed
+        !ui.statusMessage || !ui.audioPlayer || !ui.sessionQueueContainer) {
         console.warn("[uiHelpers] Missing elements for updateSessionInfoDisplay.");
         return;
     }
+
+    const isChunkSession = currentArticleDetails && currentArticleDetails.isActiveSession && currentArticleDetails.isChunk && currentArticleDetails.totalChunks > 1;
+    const autoAdvanceEnabled = currentArticleDetails ? currentArticleDetails.autoAdvanceToNextPage : false;
+
+    // Update Auto-Advance Toggle Button
+    if (ui.autoAdvanceToggleBtn) {
+        if (autoAdvanceEnabled) {
+            ui.autoAdvanceToggleBtn.textContent = "Disable Auto-Next Page";
+            ui.autoAdvanceToggleBtn.classList.add('enabled');
+        } else {
+            ui.autoAdvanceToggleBtn.textContent = "Enable Auto-Next Page";
+            ui.autoAdvanceToggleBtn.classList.remove('enabled');
+        }
+        // Show the toggle button if there's an active session, hide otherwise
+        // Or always show it if preferred, and it just applies to future sessions.
+        // For now, let's tie its visibility to an active session for relevance.
+        ui.autoAdvanceToggleBtn.style.display = currentArticleDetails && currentArticleDetails.isActiveSession ? 'block' : 'none';
+    }
+
 
     if (currentArticleDetails && currentArticleDetails.isActiveSession) {
         ui.currentSessionInfoDiv.style.display = 'block';
         let title = currentArticleDetails.title || "Reading in Progress";
         ui.currentSessionTitleSpan.textContent = title;
 
-        // Sliding title logic
         const titleSpan = ui.currentSessionTitleSpan;
         const wrapper = titleSpan.parentElement;
-
         titleSpan.classList.remove('sliding');
         titleSpan.style.animationName = '';
         titleSpan.style.animationDuration = '';
-
-        void titleSpan.offsetWidth; // Force reflow
-
-        console.log(`[uiHelpers Title Check] Title: "${title}", scrollWidth: ${titleSpan.scrollWidth}, clientWidth: ${wrapper ? wrapper.clientWidth : 'N/A'}`);
-
+        void titleSpan.offsetWidth;
         if (wrapper && titleSpan.scrollWidth > wrapper.clientWidth) {
-            console.log("[uiHelpers Title Check] Applying sliding animation.");
-            const speed = 40; // pixels per second
-
+            const speed = 40;
             const keyframesId = `dynamicMarquee-${titleSpan.id || 'currentSessionTitleMarquee'}`;
-            // Scroll from on-screen left to off-screen left, then repeat (reappears on-screen left)
             const dynamicKeyframes = `
                 @keyframes ${keyframesId} {
-                    0%   { transform: translateX(0); } /* Start on-screen left */
-                    100% { transform: translateX(-${titleSpan.scrollWidth}px); } /* End off-screen left */
+                    0%   { transform: translateX(0); } 
+                    100% { transform: translateX(-${titleSpan.scrollWidth}px); } 
                 }
             `;
-
             let styleSheet = document.getElementById('dynamicMarqueeStyles');
-            if (styleSheet) {
-                styleSheet.innerHTML = dynamicKeyframes;
-            } else {
-                console.warn("[uiHelpers] Dynamic stylesheet for marquee not found.");
-            }
-
+            if (styleSheet) styleSheet.innerHTML = dynamicKeyframes;
+            else console.warn("[uiHelpers] Dynamic stylesheet for marquee not found.");
             titleSpan.style.animationName = keyframesId;
-
-            // Duration for one full pass (from on-screen left to off-screen left)
-            const totalDistance = titleSpan.scrollWidth; // Only the part that scrolls off
+            const totalDistance = titleSpan.scrollWidth;
             let totalAnimationDuration = totalDistance / speed;
-
             if (totalAnimationDuration < 3) totalAnimationDuration = 3;
             if (totalAnimationDuration > 60) totalAnimationDuration = 60;
-
             titleSpan.style.animationDuration = `${totalAnimationDuration}s`;
             titleSpan.classList.add('sliding');
-        } else {
-            console.log("[uiHelpers Title Check] No overflow, not applying sliding animation.");
-            titleSpan.classList.remove('sliding');
-            titleSpan.style.animationName = '';
-            titleSpan.style.animationDuration = '';
         }
 
-
-        if (currentArticleDetails.isChunk && currentArticleDetails.totalChunks > 1) {
-            ui.sessionQueueContainer.style.display = 'block';
-            if (ui.sessionQueueList && ui.sessionQueueList.classList.contains('collapsed')) {
-                ui.sessionQueueList.classList.remove('collapsed');
-                if (ui.toggleSessionQueueBtn) {
-                    ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
-                    ui.toggleSessionQueueBtn.classList.add('expanded-header');
-                }
+        ui.sessionQueueContainer.style.display = isChunkSession ? 'block' : 'none';
+        if (isChunkSession && ui.sessionQueueList && ui.sessionQueueList.classList.contains('collapsed')) {
+            ui.sessionQueueList.classList.remove('collapsed');
+            if (ui.toggleSessionQueueBtn) {
+                ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
+                ui.toggleSessionQueueBtn.classList.add('expanded-header');
             }
-        } else {
-            ui.sessionQueueContainer.style.display = 'none';
         }
+
+        // The goToNextPageBtn is removed, resumeButton takes full width if visible
+        ui.resumeButton.style.width = '100%';
 
         if (isAudioPlaying) {
             ui.resumeButton.style.display = 'none';
@@ -198,22 +181,14 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
             }
             let playingStatusText = `Playing: ${(currentArticleDetails.textContent || "content").substring(0, 30)}${(currentArticleDetails.textContent || "content").length > 30 ? '...' : ''}`;
             if (currentArticleDetails.isChunk && typeof currentArticleDetails.currentChunkIndex === 'number' && typeof currentArticleDetails.totalChunks === 'number') {
-                if (currentArticleDetails.totalChunks > 1) {
-                    playingStatusText = `Playing chunk ${currentArticleDetails.currentChunkIndex + 1} of ${currentArticleDetails.totalChunks}...`;
-                } else {
-                    playingStatusText = `Playing content...`;
-                }
+                playingStatusText = currentArticleDetails.totalChunks > 1 ? `Playing chunk ${currentArticleDetails.currentChunkIndex + 1} of ${currentArticleDetails.totalChunks}...` : `Playing content...`;
             }
             ui.statusMessage.textContent = playingStatusText;
         } else {
             if (ui.audioPlayer.currentSrc && ui.audioPlayer.currentSrc !== "" && !ui.audioPlayer.ended) {
                 ui.resumeButton.style.display = 'none';
                 if (currentArticleDetails.isChunk && typeof currentArticleDetails.currentChunkIndex === 'number' && typeof currentArticleDetails.totalChunks === 'number') {
-                    if (currentArticleDetails.totalChunks > 1) {
-                        ui.currentSessionChunkInfoSpan.textContent = `(Paused at Chunk ${currentArticleDetails.currentChunkIndex + 1} of ${currentArticleDetails.totalChunks})`;
-                    } else {
-                        ui.currentSessionChunkInfoSpan.textContent = "(Paused)";
-                    }
+                    ui.currentSessionChunkInfoSpan.textContent = currentArticleDetails.totalChunks > 1 ? `(Paused at Chunk ${currentArticleDetails.currentChunkIndex + 1} of ${currentArticleDetails.totalChunks})` : "(Paused)";
                 } else if (!currentArticleDetails.isChunk && currentArticleDetails.textContent) {
                     ui.currentSessionChunkInfoSpan.textContent = "(Paused)";
                 } else {
@@ -223,7 +198,9 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
                     ui.statusMessage.textContent = "Session paused. Use player controls to resume.";
                 }
             } else {
-                ui.resumeButton.style.display = 'block';
+                ui.resumeButton.style.display = 'block'; // Resume button takes full width
+                ui.resumeButton.style.width = '100%';
+
                 if (currentArticleDetails.isChunk && typeof currentArticleDetails.currentChunkIndex === 'number' && typeof currentArticleDetails.totalChunks === 'number') {
                     ui.currentSessionChunkInfoSpan.textContent = `(Resume at Chunk ${currentArticleDetails.currentChunkIndex + 1} of ${currentArticleDetails.totalChunks})`;
                 } else if (!currentArticleDetails.isChunk && currentArticleDetails.textContent) {
@@ -248,6 +225,7 @@ function updateSessionInfoDisplay(currentArticleDetails, isAudioPlaying) {
     } else {
         ui.currentSessionInfoDiv.style.display = 'block';
         ui.resumeButton.style.display = 'none';
+        ui.autoAdvanceToggleBtn.style.display = 'none'; // Hide toggle if no active session
         ui.sessionQueueContainer.style.display = 'none';
         ui.currentSessionTitleSpan.textContent = 'Please select audio to play';
         ui.currentSessionTitleSpan.classList.remove('sliding');
@@ -272,23 +250,18 @@ function showLoader(message = "Processing...") {
     if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'flex';
     if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'none';
     if (ui.statusMessage) ui.statusMessage.textContent = message;
-
     if (ui.audioPlayer && ui.audioPlayer.HAVE_CURRENT_DATA && !ui.audioPlayer.paused) {
-        try {
-            ui.audioPlayer.pause();
-        } catch (e) {
-            console.warn("[uiHelpers] Error pausing audio in showLoader:", e);
-        }
+        try { ui.audioPlayer.pause(); }
+        catch (e) { console.warn("[uiHelpers] Error pausing audio in showLoader:", e); }
     }
     if (ui.resumeButton) ui.resumeButton.style.display = 'none';
-    // console.log("[uiHelpers] showLoader called. Message:", message);
+    if (ui.autoAdvanceToggleBtn) ui.autoAdvanceToggleBtn.style.display = 'none'; // Hide toggle during load
 }
 
 function hideLoader() {
     const ui = getUIElements();
     if (ui.loadingIndicator) ui.loadingIndicator.style.display = 'none';
     if (ui.playerAreaWrapper) ui.playerAreaWrapper.style.display = 'block';
-    // console.log("[uiHelpers] hideLoader called.");
 }
 
 function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
@@ -298,7 +271,6 @@ function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
         return;
     }
     ui.sessionQueueList.innerHTML = '';
-
     if (chunks && chunks.length > 1) {
         ui.sessionQueueContainer.style.display = 'block';
         if (ui.toggleSessionQueueBtn && ui.sessionQueueList.classList.contains('collapsed')) {
@@ -306,20 +278,14 @@ function renderSessionQueue(chunks, currentChunkIndex, onChunkClickCallback) {
             ui.toggleSessionQueueBtn.classList.remove('collapsed-header');
             ui.toggleSessionQueueBtn.classList.add('expanded-header');
         }
-
-
         chunks.forEach((chunkText, index) => {
             const li = document.createElement('li');
             li.textContent = `Part ${index + 1}: ${chunkText.substring(0, 50)}${chunkText.length > 50 ? '...' : ''}`;
             li.title = chunkText;
-            if (index === currentChunkIndex) {
-                li.classList.add('current-chunk');
-            }
+            if (index === currentChunkIndex) li.classList.add('current-chunk');
             li.dataset.chunkIndex = index;
             li.addEventListener('click', () => {
-                if (typeof onChunkClickCallback === 'function') {
-                    onChunkClickCallback(index);
-                }
+                if (typeof onChunkClickCallback === 'function') onChunkClickCallback(index);
             });
             ui.sessionQueueList.appendChild(li);
         });

@@ -8,7 +8,8 @@
         "contextMenus",
         "scripting",
         "storage",
-        "windows"
+        "windows",
+        "tabs"
     ],
     "host_permissions": [
         "http://localhost:8080/*"

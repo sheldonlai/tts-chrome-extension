@@ -121,46 +121,143 @@ function extractAndChunkTextContent() {
 }
 
 /**
- * Extracts all <a> tags from the current DOM, the current page URL, and the current page title.
- * @returns {object} An object containing currentUrl, currentTitle, and a list of links.
- * Each link object in the list has 'href' and 'text' properties.
+ * Extracts and filters <a> tags from the current DOM.
+ * @returns {object} An object containing currentUrl, currentTitle, and a filtered, deduplicated list of links.
  */
 function extractPageLinkData() {
     console.log("[Content Script] extractPageLinkData() called.");
     const currentUrl = window.location.href;
+    const currentOrigin = new URL(currentUrl).origin;
+    const currentPathname = new URL(currentUrl).pathname;
     const currentTitle = document.title || "Untitled Page";
     const allAnchorTags = document.getElementsByTagName('a');
-    const links = [];
+    const candidateLinks = []; // Store candidates before deduplication
+
+    const excludedUrlPatterns = [
+        "javascript:void(0)",
+        "mailto:",
+        "tel:",
+        "/login",
+        "/signup",
+        "/register",
+        "/privacy",
+        "/terms",
+        "/contact",
+        "/about",
+        "/sitemap",
+        "/store",
+        "/cart",
+        "/checkout",
+        "/search",
+        "/profile",
+        "/user",
+        "/account",
+        "/feed",
+        "/rss",
+        "/author/",
+        "/tag/",
+        "/category/",
+        "/genre/" // Added to catch all genre links specifically
+    ];
+
+    const excludedTextPatterns = [
+        "login", "log in", "sign in", "signin",
+        "signup", "sign up", "register",
+        "privacy policy", "terms of service", "terms & conditions",
+        "contact us", "about us",
+        "sitemap", "search",
+        "profile", "my account", "settings",
+        "share on", "tweet", "facebook", "pinterest", "linkedin", // Social media
+        "download", "subscribe", "add to cart", "buy now",
+        "advertisement", "ads by",
+        "cookie policy", "accessibility"
+    ];
 
     for (let i = 0; i < allAnchorTags.length; i++) {
         const anchor = allAnchorTags[i];
-        let href = anchor.getAttribute('href');
-        // Resolve relative URLs to absolute URLs
-        if (href) {
+        let rawHref = anchor.getAttribute('href');
+
+        if (!rawHref || rawHref.trim() === "" || rawHref.startsWith('#')) {
+            continue;
+        }
+
+        let absoluteHref;
+        try {
+            absoluteHref = new URL(rawHref, currentUrl).href;
+        } catch (e) {
+            if (excludedUrlPatterns.some(pattern => rawHref.toLowerCase().includes(pattern.toLowerCase()))) {
+                continue;
+            }
+            console.warn(`[Content Script] Could not parse href: '${rawHref}'. Skipping.`);
+            continue;
+        }
+        
+        if (!absoluteHref.startsWith('http:') && !absoluteHref.startsWith('https:')) {
+            continue;
+        }
+
+        if (absoluteHref.split('#')[0] === currentUrl.split('#')[0]) {
             try {
-                href = new URL(href, currentUrl).href;
-            } catch (e) {
-                // If it's an invalid URL (e.g., "javascript:void(0)"), keep it as is or skip
-                console.warn(`[Content Script] Invalid href: ${href}`, e);
-                // Optionally skip invalid hrefs: continue;
+                const linkUrlObj = new URL(absoluteHref);
+                if (linkUrlObj.origin === currentOrigin && linkUrlObj.pathname === currentPathname && linkUrlObj.hash !== "") {
+                    continue;
+                }
+            } catch(e) { /* ignore */ }
+        }
+
+        const linkText = (anchor.innerText || anchor.title || "").trim();
+        const linkTextLower = linkText.toLowerCase();
+        const hrefLower = absoluteHref.toLowerCase();
+
+        if (excludedUrlPatterns.some(pattern => hrefLower.includes(pattern.toLowerCase()))) {
+            continue;
+        }
+
+        if (excludedTextPatterns.some(pattern => linkTextLower.includes(pattern.toLowerCase()))) {
+            if (!(linkTextLower.includes("next") || linkTextLower.includes("prev"))) {
+                 continue;
+            }
+        }
+        
+        if (!linkText && !anchor.getAttribute('title')) {
+            let hasNavSymbol = anchor.innerHTML.includes('>') || anchor.innerHTML.includes('&gt;') ||
+                               anchor.innerHTML.includes('»') || anchor.innerHTML.includes('&raquo;');
+            let looksLikeNumericalNav = false;
+            const pathParts = currentPathname.split('/');
+            const lastPathPart = pathParts.pop() || pathParts.pop();
+            const numMatch = lastPathPart ? lastPathPart.match(/\d+/) : null;
+            if (numMatch) {
+                const currentNum = parseInt(numMatch[0]);
+                if (hrefLower.includes(String(currentNum + 1)) || hrefLower.includes(String(currentNum -1))) {
+                    looksLikeNumericalNav = true;
+                }
+            }
+            if (!hasNavSymbol && !looksLikeNumericalNav) {
+                continue;
             }
         }
 
-        const text = anchor.innerText.trim();
-        // Only include links that have an href and some text content, or a title attribute
-        if (href && (text || anchor.title)) {
-            links.push({
-                href: href,
-                text: text || anchor.title || href // Fallback to title or href if innerText is empty
-            });
+        candidateLinks.push({
+            href: absoluteHref,
+            text: linkText || anchor.title || absoluteHref
+        });
+    }
+
+    // Deduplication step
+    const uniqueLinks = [];
+    const seenHrefs = new Set();
+    for (const link of candidateLinks) {
+        if (!seenHrefs.has(link.href)) {
+            uniqueLinks.push(link);
+            seenHrefs.add(link.href);
         }
     }
 
-    console.log(`[Content Script] Extracted ${links.length} links. Current URL: ${currentUrl}, Title: ${currentTitle}`);
+    console.log(`[Content Script] Extracted ${allAnchorTags.length} total anchors. Filtered to ${candidateLinks.length} candidates. Deduplicated to ${uniqueLinks.length} unique links.`);
     return {
         currentUrl: currentUrl,
         currentTitle: currentTitle,
-        links: links
+        links: uniqueLinks // Send the filtered and deduplicated list
     };
 }
 

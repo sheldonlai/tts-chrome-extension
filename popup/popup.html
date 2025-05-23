@@ -9,7 +9,8 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
             width: 380px;
-            min-height: 550px;
+            min-height: 650px;
+            /* Slightly increased for new button */
             padding: 10px;
             padding-bottom: 40px;
             text-align: center;
@@ -20,6 +21,8 @@
             font-size: 14px;
             overflow-x: hidden;
             position: relative;
+            display: flex;
+            flex-direction: column;
         }
 
         h3 {
@@ -40,64 +43,45 @@
             text-align: left;
         }
 
-        /* Styles for sliding title */
         .title-marquee-wrapper {
             overflow: hidden;
             width: 100%;
             height: 1.4em;
-            /* Adjust to fit one line of title text comfortably */
             position: relative;
-            /* For positioning the span inside */
             margin-bottom: 3px;
-            /* Matches original margin-bottom of title span */
         }
 
         #currentSessionTitle {
             font-weight: 600;
             white-space: nowrap;
-            /* margin-bottom: 3px; /* Moved to wrapper or handled by wrapper height */
-
-            /* For animation and default ellipsis */
             position: absolute;
             left: 0;
             top: 0;
-            /* Align to top of wrapper */
             line-height: 1.4em;
-            /* Match wrapper height */
             transform: translateX(0);
-            /* Initial position */
-
-            /* Default behavior for non-sliding text */
             width: 100%;
-            /* Take up wrapper width for ellipsis */
             overflow: hidden;
-            /* Required for ellipsis */
             text-overflow: ellipsis;
-            /* Default for non-sliding */
         }
 
         #currentSessionTitle.sliding {
             width: auto;
-            /* Allow its natural width when sliding */
             overflow: visible;
-            /* No clipping by itself, wrapper does it */
             text-overflow: clip;
-            /* No ellipsis during animation */
-            /* animation-name will be set by JS (e.g., dynamicMarquee-currentSessionTitle) */
             animation-timing-function: linear;
             animation-iteration-count: infinite;
-            /* animation-duration will be set by JS */
             will-change: transform;
-            /* Performance hint */
         }
-
-        /* Dynamic keyframes will be injected by uiHelpers.js */
-
 
         #currentSessionChunkInfo {
             font-size: 0.9em;
             display: block;
-            /* Ensure it's on its own line after title wrapper */
+        }
+
+        .session-controls-wrapper {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
         }
 
         #resumeButton {
@@ -105,17 +89,48 @@
             color: white;
             border: none;
             padding: 6px 12px;
-            margin-top: 5px;
             border-radius: 5px;
             cursor: pointer;
             font-size: 0.85em;
             display: none;
             transition: background-color 0.2s ease-in-out;
+            width: 100%;
+            /* Takes full width if it's the only button */
+            box-sizing: border-box;
         }
 
         #resumeButton:hover {
             background-color: #218838;
         }
+
+        #autoAdvanceToggleBtn {
+            background-color: #6c757d;
+            /* Default: gray for disabled */
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            /* Slightly larger */
+            margin-top: 8px;
+            /* Space above */
+            margin-bottom: 5px;
+            /* Space below */
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            width: 100%;
+            box-sizing: border-box;
+            transition: background-color 0.2s ease-in-out;
+        }
+
+        #autoAdvanceToggleBtn.enabled {
+            background-color: #17a2b8;
+            /* Teal for enabled */
+        }
+
+        #autoAdvanceToggleBtn:hover {
+            filter: brightness(90%);
+        }
+
 
         #statusMessage {
             margin-top: 8px;
@@ -127,10 +142,8 @@
         }
 
         #playerAreaWrapper {
-            /* Renamed from playerAreaWrapper to avoid conflict if it was a typo */
             margin-bottom: 8px;
         }
-
 
         audio#popupAudioPlayer {
             width: 100%;
@@ -155,7 +168,6 @@
             height: 25px;
         }
 
-
         @keyframes spin {
             0% {
                 transform: rotate(0deg);
@@ -170,9 +182,11 @@
             margin-top: 12px;
             text-align: left;
             margin-bottom: 15px;
+            flex-shrink: 0;
         }
 
         .list-container h4 {
+            /* ... (no changes) ... */
             margin-top: 0;
             margin-bottom: 0;
             color: #2c3e50;
@@ -206,7 +220,6 @@
             transform: rotate(90deg);
         }
 
-
         .list-container h4.collapsed-header {
             border-radius: 6px;
         }
@@ -219,10 +232,10 @@
 
         .list-container ul#historyList,
         .list-container ul#sessionQueueList {
+            /* ... (no changes) ... */
             list-style-type: none;
             padding: 0;
             max-height: 120px;
-            /* Adjusted for sessionQueueList too */
             overflow-y: auto;
             border: 1px solid #d1d8de;
             border-top: none;
@@ -234,11 +247,8 @@
             box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
         }
 
-        /* Specific max-height for session queue if different */
-        /* .list-container ul#sessionQueueList { max-height: 100px; } */
-
-
         .list-container ul.collapsed {
+            /* ... (no changes) ... */
             max-height: 0;
             opacity: 0;
             overflow: hidden;
@@ -250,6 +260,7 @@
         }
 
         .list-container>ul>li {
+            /* ... (no changes) ... */
             padding: 8px 12px;
             border-bottom: 1px solid #eee;
             cursor: pointer;
@@ -292,7 +303,6 @@
             border-bottom: none;
         }
 
-
         .history-group-prefix {
             font-weight: bold;
             color: #333;
@@ -309,6 +319,7 @@
         }
 
         ul.history-group-items>li {
+            /* ... (no changes) ... */
             padding: 7px 12px 7px 25px;
             border-bottom: 1px dotted #f0f0f0;
             cursor: pointer;
@@ -333,8 +344,8 @@
             color: #555;
         }
 
-
         .delete-history-item {
+            /* ... (no changes) ... */
             background: none;
             border: none;
             color: #dc3545;
@@ -351,14 +362,14 @@
         }
 
         #clearAllDataContainer {
-            position: absolute;
-            bottom: 10px;
-            left: 0;
+            margin-top: auto;
+            padding-top: 10px;
             width: 100%;
             text-align: center;
         }
 
         button#clearHistoryBtn {
+            /* ... (no changes) ... */
             background-color: transparent;
             color: #6c757d;
             border: none;
@@ -387,10 +398,14 @@
                 <span id="currentSessionTitle"></span>
             </div>
             <span id="currentSessionChunkInfo"></span>
-            <button id="resumeButton">Resume Reading</button>
+            <div class="session-controls-wrapper">
+                <button id="resumeButton">Resume Reading</button>
+            </div>
         </div>
         <audio id="popupAudioPlayer" controls controlsList="nodownload"></audio>
     </div>
+
+    <button id="autoAdvanceToggleBtn">Enable Auto-Next Page</button>
 
     <div class="loader" id="loadingIndicator">
         <div class="loader-spinner"></div>
